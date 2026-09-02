@@ -1,0 +1,126 @@
+from dataclasses import dataclass
+from io import BytesIO
+from typing import Any, Dict, Optional
+from urllib.parse import urljoin
+
+import aiohttp
+
+from .config import MoonrakerConfig
+
+
+class MoonrakerError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class CameraImage:
+    data: bytes
+    filename: str
+
+
+class MoonrakerClient:
+    def __init__(self, config: MoonrakerConfig):
+        self.config = config
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def __aenter__(self):
+        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+        headers = {}
+        if self.config.api_key:
+            headers["X-Api-Key"] = self.config.api_key
+        connector = aiohttp.TCPConnector(ssl=self.config.verify_ssl)
+        self._session = aiohttp.ClientSession(
+            timeout=timeout, headers=headers, connector=connector)
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
+
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            raise RuntimeError("MoonrakerClient is not open")
+        return self._session
+
+    async def _json(self, method: str, path: str,
+                    **kwargs) -> Dict[str, Any]:
+        url = urljoin(self.config.url + "/", path.lstrip("/"))
+        try:
+            async with self.session.request(method, url, **kwargs) as response:
+                payload = await response.json(content_type=None)
+                if response.status >= 400:
+                    raise MoonrakerError(
+                        "Moonraker returned HTTP {}: {}".format(
+                            response.status, payload))
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise MoonrakerError("Unable to contact Moonraker: {}".format(
+                exc)) from exc
+        if "error" in payload:
+            raise MoonrakerError("Moonraker error: {}".format(payload["error"]))
+        result = payload.get("result", payload)
+        if not isinstance(result, dict):
+            raise MoonrakerError("Unexpected Moonraker response")
+        return result
+
+    async def status(self) -> Dict[str, Any]:
+        objects: Dict[str, Any] = {
+            "print_stats": None,
+            "virtual_sdcard": None,
+            "display_status": None,
+        }
+        for name in self.config.temperature_objects:
+            objects[name] = None
+        result = await self._json("POST", "/server/jsonrpc", json={
+            "jsonrpc": "2.0",
+            "method": "printer.objects.query",
+            "params": {"objects": objects},
+            "id": 1,
+        })
+        status = result.get("status", {})
+        if not isinstance(status, dict):
+            raise MoonrakerError("Moonraker status result is malformed")
+        return status
+
+    async def printer_info(self) -> Dict[str, Any]:
+        return await self._json("GET", "/printer/info")
+
+    async def _snapshot_url(self) -> str:
+        if self.config.snapshot_url:
+            return urljoin(self.config.url + "/", self.config.snapshot_url)
+        result = await self._json("GET", "/server/webcams/list")
+        webcams = result.get("webcams", [])
+        if not webcams:
+            raise MoonrakerError("Moonraker has no configured webcams")
+        selected = None
+        if self.config.camera_name:
+            selected = next((camera for camera in webcams
+                             if camera.get("name") == self.config.camera_name),
+                            None)
+        selected = selected or webcams[0]
+        snapshot_url = selected.get("snapshot_url")
+        if not snapshot_url:
+            raise MoonrakerError("Selected webcam has no snapshot URL")
+        return urljoin(self.config.url + "/", snapshot_url)
+
+    async def camera_image(self) -> CameraImage:
+        url = await self._snapshot_url()
+        try:
+            async with self.session.get(url) as response:
+                if response.status >= 400:
+                    raise MoonrakerError(
+                        "Camera returned HTTP {}".format(response.status))
+                data = await response.read()
+                content_type = response.headers.get("Content-Type", "")
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise MoonrakerError("Unable to fetch camera image: {}".format(
+                exc)) from exc
+        if not data:
+            raise MoonrakerError("Camera returned an empty image")
+        extension = ".png" if "png" in content_type else ".jpg"
+        return CameraImage(data=data, filename="printer" + extension)
+
+    async def camera_file(self):
+        image = await self.camera_image()
+        return BytesIO(image.data), image.filename

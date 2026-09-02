@@ -1,0 +1,29 @@
+{
+  "discord": {
+    "token": "PUT_DISCORD_BOT_TOKEN_HERE",
+    "notification_channel_id": 0,
+    "allowed_guild_id": 0,
+    "public_status_responses": false
+  },
+  "moonraker": {
+    "url": "http://127.0.0.1:7125",
+    "api_key": "",
+    "timeout_seconds": 10,
+    "verify_ssl": true,
+    "camera_name": "",
+    "snapshot_url": "",
+    "temperature_objects": [
+      "extruder",
+      "heater_bed",
+      "heater_generic chamber_heater",
+      "temperature_sensor chamber"
+    ]
+  },
+  "notifications": {
+    "enabled": true,
+    "poll_seconds": 10,
+    "include_camera": true,
+    "states": ["printing", "paused", "complete", "error", "cancelled"]
+  }
+}
+
