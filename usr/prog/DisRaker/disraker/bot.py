@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 
 from .config import AppConfig
 from .moonraker import MoonrakerClient, MoonrakerError
+from .relay import RelayPublisher, RelayServer, RelayStatus
 from .state import PrintObservation, PrintStateStore
 
 
@@ -31,6 +32,7 @@ def _duration(seconds: float) -> str:
 
 
 def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
+    printer_name = printer_name[:180]
     stats = status.get("print_stats", {})
     state = str(stats.get("state", "unknown"))
     filename = stats.get("filename") or "No active file"
@@ -47,7 +49,7 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
     }.get(state, discord.Color.light_grey())
     embed = discord.Embed(
         title="{} — Printer status".format(printer_name),
-        description=str(filename), color=color)
+        description=str(filename)[:4096], color=color)
     embed.add_field(name="State", value=state.title(), inline=True)
     embed.add_field(name="Progress", value="{:.1f}%".format(progress),
                     inline=True)
@@ -112,7 +114,7 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
         temperatures.append(
             "{}: **{:.1f}°C** / {:.1f}°C".format(label, current, target))
     embed.add_field(name="Temperatures",
-                    value="\n".join(temperatures) or "Unavailable",
+                    value=("\n".join(temperatures) or "Unavailable")[:1024],
                     inline=False)
     message = stats.get("message") or display_status.get("message")
     if message:
@@ -175,6 +177,32 @@ def details_embed(status: Dict[str, Any], info: Dict[str, Any],
                         inline=False)
     embed.timestamp = discord.utils.utcnow()
     return embed
+
+
+def state_event_content(printer_name: str, status: Dict[str, Any],
+                        state: str,
+                        previous: Optional[PrintObservation] = None) -> str:
+    stats = status.get("print_stats", {})
+    filename = stats.get("filename") or "the selected job"
+    messages = {
+        "printing": "🖨️ **{} is starting:** `{}`".format(
+            printer_name, filename),
+        "paused": "⏸️ **{} paused:** `{}`".format(
+            printer_name, filename),
+        "complete": "✅ **{} completed:** `{}`".format(
+            printer_name, filename),
+        "error": "❌ **{} print error:** `{}`".format(
+            printer_name, filename),
+        "cancelled": "🛑 **{} cancelled:** `{}`".format(
+            printer_name, filename),
+        "standby": "💤 **{} is idle.**".format(printer_name),
+    }
+    if state == "printing" and previous is not None:
+        if previous.state == "paused":
+            messages["printing"] = "▶️ **{} resumed:** `{}`".format(
+                printer_name, filename)
+    return messages.get(
+        state, "{} changed to **{}**.".format(printer_name, state.title()))
 
 
 class PrinterView(discord.ui.View):
@@ -318,11 +346,19 @@ class DisRakerBot(commands.Bot):
         self._printer_name: Optional[str] = configured_name or None
         self._commands_synced = False
         self._dashboard_message: Optional[discord.Message] = None
+        self._relay_messages: Dict[str, discord.Message] = {}
+        self._relay_observations: Dict[str, PrintObservation] = {}
+        self._relay_publisher = RelayPublisher(config.relay)
+        self._relay_server = RelayServer(
+            config.relay, self.handle_relay_status)
         self._state_lock = asyncio.Lock()
+        self._relay_lock = asyncio.Lock()
         self._realtime_task = None
 
     async def setup_hook(self):
         self.add_view(PrinterView(self))
+        await self._relay_publisher.start()
+        await self._relay_server.start()
         self.notification_poll.change_interval(
             seconds=self.config.notifications.poll_seconds)
         if self.config.notifications.enabled:
@@ -332,6 +368,8 @@ class DisRakerBot(commands.Bot):
     async def close(self):
         if self._realtime_task is not None:
             self._realtime_task.cancel()
+        await self._relay_server.close()
+        await self._relay_publisher.close()
         await super().close()
 
     async def on_ready(self):
@@ -417,8 +455,8 @@ class DisRakerBot(commands.Bot):
         return {"embed": embed, "attachments": attachments,
                 "view": PrinterView(self)}
 
-    async def status_channel(self):
-        channel_id = self.config.discord.status_channel_id
+    async def status_channel(self, channel_id: int = 0):
+        channel_id = channel_id or self.config.discord.status_channel_id
         if not channel_id:
             return None
         channel = self.get_channel(channel_id)
@@ -429,6 +467,66 @@ class DisRakerBot(commands.Bot):
                 LOG.exception("Cannot access status channel %s", channel_id)
                 return None
         return channel
+
+    async def publish_relay_status(self, status: Dict[str, Any]):
+        if not self.config.relay.publish_url:
+            return
+        camera_data = None
+        camera_filename = "printer.jpg"
+        if self.config.relay.include_camera:
+            try:
+                camera = await self.moonraker.camera_image()
+                camera_data = camera.data
+                camera_filename = camera.filename
+            except MoonrakerError:
+                LOG.warning("Camera unavailable for relay", exc_info=True)
+        await self._relay_publisher.publish(
+            await self.printer_name(), status,
+            camera_data=camera_data,
+            camera_filename=camera_filename,
+        )
+
+    async def handle_relay_status(self, relay: RelayStatus, source):
+        async with self._relay_lock:
+            await self._process_relay_status(relay, source)
+
+    async def _process_relay_status(self, relay: RelayStatus, source):
+        printer_name = source.display_name or relay.printer_name
+        observation = PrintObservation.from_status(relay.status)
+        previous = self._relay_observations.get(relay.relay_id)
+        changed = observation.is_new_transition(previous)
+        self._relay_observations[relay.relay_id] = observation
+        channel = await self.status_channel(source.channel_id)
+        if channel is None:
+            return
+        message = self._relay_messages.get(relay.relay_id)
+        if not changed and observation.state != "printing":
+            return
+        embed = status_embed(relay.status, printer_name)
+        kwargs: Dict[str, Any] = {"embed": embed}
+        if relay.camera_data is not None:
+            image = discord.File(
+                BytesIO(relay.camera_data), relay.camera_filename)
+            kwargs["attachments"] = [image]
+            embed.set_image(url="attachment://{}".format(
+                relay.camera_filename))
+        if changed or message is None:
+            kwargs.pop("attachments", None)
+            if relay.camera_data is not None:
+                kwargs["file"] = discord.File(
+                    BytesIO(relay.camera_data), relay.camera_filename)
+            kwargs["content"] = state_event_content(
+                printer_name, relay.status, observation.state, previous)
+            self._relay_messages[relay.relay_id] = await channel.send(**kwargs)
+            return
+        try:
+            await message.edit(**kwargs)
+        except discord.NotFound:
+            kwargs.pop("attachments", None)
+            if relay.camera_data is not None:
+                kwargs["file"] = discord.File(
+                    BytesIO(relay.camera_data), relay.camera_filename)
+            self._relay_messages[relay.relay_id] = await channel.send(**kwargs)
 
     async def update_dashboard(self, channel, status: Dict[str, Any],
                                force_new: bool = False):
@@ -450,28 +548,9 @@ class DisRakerBot(commands.Bot):
     async def send_state_event(self, channel, status: Dict[str, Any],
                                state: str,
                                previous: Optional[PrintObservation] = None):
-        stats = status.get("print_stats", {})
-        filename = stats.get("filename") or "the selected job"
         printer_name = await self.printer_name()
-        messages = {
-            "printing": "🖨️ **{} is starting:** `{}`".format(
-                printer_name, filename),
-            "paused": "⏸️ **{} paused:** `{}`".format(
-                printer_name, filename),
-            "complete": "✅ **{} completed:** `{}`".format(
-                printer_name, filename),
-            "error": "❌ **{} print error:** `{}`".format(
-                printer_name, filename),
-            "cancelled": "🛑 **{} cancelled:** `{}`".format(
-                printer_name, filename),
-            "standby": "💤 **{} is idle.**".format(printer_name),
-        }
-        if state == "printing" and previous is not None:
-            if previous.state == "paused":
-                messages["printing"] = "▶️ **{} resumed:** `{}`".format(
-                    printer_name, filename)
-        content = messages.get(state, "Printer state changed to **{}**.".format(
-            state.title()))
+        content = state_event_content(
+            printer_name, status, state, previous)
         embed = status_embed(status, printer_name)
         kwargs = {
             "content": content,
@@ -496,6 +575,7 @@ class DisRakerBot(commands.Bot):
             changed = observation.is_new_transition(previous)
             self._last_observation = observation
             self._state_store.save(observation)
+            await self.publish_relay_status(status)
             channel = await self.status_channel()
             if channel is None:
                 return

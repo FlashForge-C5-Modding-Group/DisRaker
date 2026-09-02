@@ -49,10 +49,29 @@ class NotificationConfig:
 
 
 @dataclass(frozen=True)
+class RelaySourceConfig:
+    secret: str
+    display_name: str = ""
+    channel_id: int = 0
+
+
+@dataclass(frozen=True)
+class RelayConfig:
+    publish_url: str = ""
+    relay_id: str = ""
+    secret: str = ""
+    include_camera: bool = False
+    listen_host: str = ""
+    listen_port: int = 7131
+    sources: Dict[str, RelaySourceConfig] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     discord: DiscordConfig
     moonraker: MoonrakerConfig
     notifications: NotificationConfig
+    relay: RelayConfig
 
 
 def _section(data: Dict[str, Any], name: str) -> Dict[str, Any]:
@@ -78,6 +97,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     discord_data = _section(data, "discord")
     moonraker_data = _section(data, "moonraker")
     notification_data = _section(data, "notifications")
+    relay_data = _section(data, "relay")
     token = os.environ.get(
         "DISRAKER_DISCORD_TOKEN", str(discord_data.get("token", ""))).strip()
     if not token:
@@ -127,4 +147,35 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         states=list(notification_data.get(
             "states", NotificationConfig().states)),
     )
-    return AppConfig(discord, moonraker, notifications)
+    source_data = relay_data.get("sources", {})
+    if not isinstance(source_data, dict):
+        raise ValueError("relay.sources must be an object")
+    sources = {}
+    for relay_id, source in source_data.items():
+        if not isinstance(source, dict):
+            raise ValueError("relay source {!r} must be an object".format(
+                relay_id))
+        sources[str(relay_id)] = RelaySourceConfig(
+            secret=str(source.get("secret", "")),
+            display_name=str(source.get("display_name", "")).strip(),
+            channel_id=int(source.get("channel_id", 0)),
+        )
+    relay = RelayConfig(
+        publish_url=str(relay_data.get("publish_url", "")).strip(),
+        relay_id=str(relay_data.get("relay_id", "")).strip(),
+        secret=str(relay_data.get("secret", "")),
+        include_camera=bool(relay_data.get("include_camera", False)),
+        listen_host=str(relay_data.get("listen_host", "")).strip(),
+        listen_port=int(relay_data.get("listen_port", 7131)),
+        sources=sources,
+    )
+    if relay.publish_url and (not relay.relay_id or not relay.secret):
+        raise ValueError(
+            "relay publishing requires relay_id and secret")
+    if relay.listen_host:
+        missing = [name for name, source in sources.items()
+                   if not source.secret]
+        if missing:
+            raise ValueError("relay sources require a secret: {}".format(
+                ", ".join(missing)))
+    return AppConfig(discord, moonraker, notifications, relay)

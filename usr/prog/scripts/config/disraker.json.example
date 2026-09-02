@@ -34,5 +34,14 @@
     "states": [
       "printing", "paused", "complete", "error", "cancelled", "standby"
     ]
+  },
+  "relay": {
+    "publish_url": "",
+    "relay_id": "",
+    "secret": "",
+    "include_camera": false,
+    "listen_host": "",
+    "listen_port": 7131,
+    "sources": {}
   }
 }

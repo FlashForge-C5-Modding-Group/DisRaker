@@ -45,6 +45,61 @@ Discord account IDs to `control_user_ids` and/or role IDs to
 who can see the status card may use the controls. Members with Manage Server
 permission are always allowed when an allowlist is active.
 
+## Multi-printer relay
+
+DisRaker can securely forward a printer's Moonraker status to a central
+DisRaker Discord bot. Moonraker itself does not need to be exposed. Every
+publisher has a unique relay ID and HMAC secret, allowing one hub to collect
+status from multiple people's printers.
+
+On a printer-side instance, configure:
+
+```json
+"relay": {
+  "publish_url": "https://discord-bot.example/disraker/v1/status",
+  "relay_id": "alice-creator5",
+  "secret": "GENERATE_A_LONG_RANDOM_SECRET",
+  "include_camera": false
+}
+```
+
+The printer-side `status_channel_id` may be `0` if only the central bot should
+post status. The publisher still needs a Discord bot token because DisRaker is
+run as a Discord bot process.
+
+On the central instance, disable local polling if it has no local printer and
+configure the listener and authorized sources:
+
+```json
+"notifications": {
+  "enabled": false
+},
+"relay": {
+  "listen_host": "0.0.0.0",
+  "listen_port": 7131,
+  "sources": {
+    "alice-creator5": {
+      "secret": "GENERATE_A_LONG_RANDOM_SECRET",
+      "display_name": "Alice's Creator 5",
+      "channel_id": 0
+    },
+    "bob-voron": {
+      "secret": "A_DIFFERENT_LONG_RANDOM_SECRET",
+      "display_name": "Bob's Voron",
+      "channel_id": 123456789012345678
+    }
+  }
+}
+```
+
+A source `channel_id` of `0` uses the hub's normal `status_channel_id`.
+Requests are signed with HMAC-SHA256 and expire after five minutes. Keep each
+secret private and different. Put the listener behind HTTPS, a VPN, or a TLS
+reverse proxy when it crosses the public internet. Set `include_camera` to
+`true` only when camera forwarding is wanted; image data increases bandwidth.
+The relay forwards status and optional camera images, not remote printer-control
+commands.
+
 The Discord application needs the `bot` and `applications.commands` scopes.
 Recommended channel permissions are View Channel, Send Messages, Embed Links,
 Attach Files, and Use Application Commands. Message Content intent is not
