@@ -46,6 +46,21 @@ chmod +x /usr/prog/scripts/scripts/disraker_loop.sh
 /usr/prog/scripts/scripts/disraker_loop.sh
 ```
 
+For Windows testing, run the batch launcher from the repository:
+
+```bat
+usr\prog\scripts\scripts\disraker_loop.bat --check
+usr\prog\scripts\scripts\disraker_loop.bat --once
+usr\prog\scripts\scripts\disraker_loop.bat
+```
+
+On first use it creates `usr\prog\DisRaker\.venv` and installs the Python
+requirements. If the JSON configuration does not exist, it copies the example
+to `usr\prog\scripts\config\disraker.json` and asks you to fill in the Discord
+token and status channel. `--once` keeps errors visible without entering the
+restart loop; the default mode restarts after failures and records lifecycle
+events in `usr\prog\DisRaker\logs\disraker.log`.
+
 Run `/printer` in Discord for a private status card, or `/dashboard` to publish
 a shared dashboard. DisRaker also creates or recovers one persistent dashboard
 in `status_channel_id`. Its Refresh Status and Camera buttons always fetch
