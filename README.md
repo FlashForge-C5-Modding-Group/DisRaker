@@ -21,10 +21,11 @@ Copy `usr/prog/scripts/config/disraker.json.example` to
 status channel ID, and Moonraker URL. The token may instead be supplied
 as `DISRAKER_DISCORD_TOKEN`.
 
-Status is polled every 60 seconds by default. Each poll sends a fresh status
-card; set `notifications.poll_seconds` to change the interval. Print-state
-transitions additionally use Moonraker's WebSocket subscription, so
-start/pause/finish messages do not wait for the next poll.
+Status is polled every 60 seconds by default. During a print, each poll edits
+the current live card. A pause, resume, completion, cancellation, error, or
+other state transition creates a new card. Set `notifications.poll_seconds`
+to change the interval. Print-state transitions additionally use Moonraker's
+WebSocket subscription, so start/pause/finish messages do not wait for a poll.
 `show_camera_in_status` controls the dashboard image,
 `include_camera_in_events` controls event-message images, and `send_idle`
 enables or disables idle transition messages. Camera selection uses
@@ -76,6 +77,7 @@ restart loop; the default mode restarts after failures and records lifecycle
 events in `usr\prog\DisRaker\logs\disraker.log`.
 
 Run `/printer` in Discord for a private status card, or `/dashboard` to publish
-a shared status card. The configured `status_channel_id` receives a new card
-on every poll. Refresh, Camera, and Details always fetch fresh information
-through Moonraker; an optional link button opens `printer_ui_url`.
+a shared status card. The configured `status_channel_id` receives a rolling
+live card plus a new card at each state transition. Refresh, Camera, and
+Details always fetch fresh information through Moonraker; an optional link
+button opens `printer_ui_url`.

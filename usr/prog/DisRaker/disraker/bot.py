@@ -317,6 +317,7 @@ class DisRakerBot(commands.Bot):
         configured_name = config.moonraker.printer_name
         self._printer_name: Optional[str] = configured_name or None
         self._commands_synced = False
+        self._dashboard_message: Optional[discord.Message] = None
         self._state_lock = asyncio.Lock()
         self._realtime_task = None
 
@@ -429,16 +430,26 @@ class DisRakerBot(commands.Bot):
                 return None
         return channel
 
-    async def update_dashboard(self, channel, status: Dict[str, Any]):
+    async def update_dashboard(self, channel, status: Dict[str, Any],
+                               force_new: bool = False):
         embed, image = await self.status_content(status)
         view = PrinterView(self)
         kwargs = {"embed": embed, "view": view}
         if image is not None:
             kwargs["file"] = image
-        await channel.send(**kwargs)
+        if force_new or self._dashboard_message is None:
+            self._dashboard_message = await channel.send(**kwargs)
+            return
+        attachments = [image] if image is not None else []
+        try:
+            await self._dashboard_message.edit(
+                embed=embed, attachments=attachments, view=view)
+        except discord.NotFound:
+            self._dashboard_message = await channel.send(**kwargs)
 
     async def send_state_event(self, channel, status: Dict[str, Any],
-                               state: str):
+                               state: str,
+                               previous: Optional[PrintObservation] = None):
         stats = status.get("print_stats", {})
         filename = stats.get("filename") or "the selected job"
         printer_name = await self.printer_name()
@@ -455,10 +466,18 @@ class DisRakerBot(commands.Bot):
                 printer_name, filename),
             "standby": "💤 **{} is idle.**".format(printer_name),
         }
+        if state == "printing" and previous is not None:
+            if previous.state == "paused":
+                messages["printing"] = "▶️ **{} resumed:** `{}`".format(
+                    printer_name, filename)
         content = messages.get(state, "Printer state changed to **{}**.".format(
             state.title()))
         embed = status_embed(status, printer_name)
-        kwargs = {"content": content, "embed": embed}
+        kwargs = {
+            "content": content,
+            "embed": embed,
+            "view": PrinterView(self),
+        }
         if self.config.notifications.include_camera_in_events:
             try:
                 image = await self.moonraker.camera_image()
@@ -467,28 +486,33 @@ class DisRakerBot(commands.Bot):
                 embed.set_image(url="attachment://{}".format(image.filename))
             except MoonrakerError:
                 LOG.warning("Camera unavailable for event", exc_info=True)
-        await channel.send(**kwargs)
+        return await channel.send(**kwargs)
 
     async def process_status(self, status: Dict[str, Any],
                              update_dashboard: bool):
         async with self._state_lock:
             observation = PrintObservation.from_status(status)
-            changed = observation.is_new_transition(self._last_observation)
+            previous = self._last_observation
+            changed = observation.is_new_transition(previous)
             self._last_observation = observation
             self._state_store.save(observation)
             channel = await self.status_channel()
             if channel is None:
                 return
-            if update_dashboard:
-                await self.update_dashboard(channel, status)
-            if not changed:
-                return
             state = observation.state
-            if state not in self.config.notifications.states:
+            notify = changed and (
+                state in self.config.notifications.states
+                and (state != "standby"
+                     or self.config.notifications.send_idle)
+            )
+            if notify:
+                message = await self.send_state_event(
+                    channel, status, state, previous)
+                self._dashboard_message = message
                 return
-            if state == "standby" and not self.config.notifications.send_idle:
-                return
-            await self.send_state_event(channel, status, state)
+            if update_dashboard and (changed or state == "printing"):
+                await self.update_dashboard(
+                    channel, status, force_new=changed)
 
     async def realtime_monitor(self):
         await self.wait_until_ready()
