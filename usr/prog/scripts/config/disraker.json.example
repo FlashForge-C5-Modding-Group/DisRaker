@@ -1,9 +1,10 @@
 {
   "discord": {
     "token": "PUT_DISCORD_BOT_TOKEN_HERE",
-    "notification_channel_id": 0,
+    "status_channel_id": 0,
     "allowed_guild_id": 0,
-    "public_status_responses": false
+    "public_status_responses": false,
+    "printer_ui_url": ""
   },
   "moonraker": {
     "url": "http://127.0.0.1:7125",
@@ -21,9 +22,12 @@
   },
   "notifications": {
     "enabled": true,
-    "poll_seconds": 10,
-    "include_camera": true,
-    "states": ["printing", "paused", "complete", "error", "cancelled"]
+    "poll_seconds": 300,
+    "show_camera_in_status": true,
+    "include_camera_in_events": true,
+    "send_idle": false,
+    "states": [
+      "printing", "paused", "complete", "error", "cancelled", "standby"
+    ]
   }
 }
-

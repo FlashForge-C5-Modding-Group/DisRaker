@@ -1,9 +1,10 @@
 # DisRaker
 
 DisRaker is a Python Discord bot for a Klipper printer managed by Moonraker.
-It publishes a Discord dashboard with buttons for current print state,
-temperatures, progress, and a Moonraker-configured camera snapshot. It can also
-notify a Discord channel when a print starts, pauses, completes, or fails.
+It maintains a live Discord dashboard with buttons for current print state,
+temperatures, progress, and a Moonraker-configured camera snapshot. It also
+notifies a configured status channel when a print starts, pauses, completes,
+fails, or is cancelled.
 
 The repository mirrors the requested printer installation layout:
 
@@ -17,8 +18,17 @@ usr/prog/scripts/scripts/          Restart loop script
 
 Copy `usr/prog/scripts/config/disraker.json.example` to
 `/usr/prog/scripts/config/disraker.json`, then set the Discord bot token,
-notification channel ID, and Moonraker URL. The token may instead be supplied
+status channel ID, and Moonraker URL. The token may instead be supplied
 as `DISRAKER_DISCORD_TOKEN`.
+
+Status is polled every 300 seconds by default. Set `notifications.poll_seconds`
+to change it. Print-state transitions additionally use Moonraker's WebSocket
+subscription, so start/pause/finish messages do not wait for the next poll.
+`show_camera_in_status` controls the dashboard image,
+`include_camera_in_events` controls event-message images, and `send_idle`
+enables or disables idle transition messages. Camera selection uses
+Moonraker's webcam list and the configured `camera_name`; `snapshot_url` can
+override it explicitly.
 
 The Discord application needs the `bot` and `applications.commands` scopes.
 Recommended channel permissions are View Channel, Send Messages, Embed Links,
@@ -37,6 +47,7 @@ chmod +x /usr/prog/scripts/scripts/disraker_loop.sh
 ```
 
 Run `/printer` in Discord for a private status card, or `/dashboard` to publish
-a persistent shared dashboard. The Refresh and Camera buttons always fetch
-fresh information through Moonraker.
-
+a shared dashboard. DisRaker also creates or recovers one persistent dashboard
+in `status_channel_id`. Its Refresh Status and Camera buttons always fetch
+fresh information through Moonraker; an optional link button opens the URL in
+`printer_ui_url`.

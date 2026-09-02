@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 from urllib.parse import urljoin
 
 import aiohttp
@@ -85,6 +85,40 @@ class MoonrakerClient:
 
     async def printer_info(self) -> Dict[str, Any]:
         return await self._json("GET", "/printer/info")
+
+    async def status_updates(self) -> AsyncIterator[Dict[str, Any]]:
+        url = urljoin(self.config.url + "/", "websocket")
+        if url.startswith("https://"):
+            url = "wss://" + url[len("https://"):]
+        elif url.startswith("http://"):
+            url = "ws://" + url[len("http://"):]
+        try:
+            async with self.session.ws_connect(url, heartbeat=30.0) as socket:
+                await socket.send_json({
+                    "jsonrpc": "2.0",
+                    "method": "printer.objects.subscribe",
+                    "params": {"objects": {"print_stats": None}},
+                    "id": 2,
+                })
+                async for message in socket:
+                    if message.type == aiohttp.WSMsgType.TEXT:
+                        payload = message.json()
+                        if payload.get("id") == 2:
+                            status = payload.get("result", {}).get("status", {})
+                        elif payload.get("method") == "notify_status_update":
+                            params = payload.get("params", [])
+                            status = params[0] if params else {}
+                        else:
+                            continue
+                        if isinstance(status, dict):
+                            yield status
+                    elif message.type in (
+                            aiohttp.WSMsgType.CLOSED,
+                            aiohttp.WSMsgType.ERROR):
+                        break
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise MoonrakerError(
+                "Moonraker WebSocket disconnected: {}".format(exc)) from exc
 
     async def _snapshot_url(self) -> str:
         if self.config.snapshot_url:

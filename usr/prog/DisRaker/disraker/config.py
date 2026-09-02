@@ -25,18 +25,21 @@ class MoonrakerConfig:
 @dataclass(frozen=True)
 class DiscordConfig:
     token: str
-    notification_channel_id: int = 0
+    status_channel_id: int = 0
     allowed_guild_id: int = 0
     public_status_responses: bool = False
+    printer_ui_url: str = ""
 
 
 @dataclass(frozen=True)
 class NotificationConfig:
     enabled: bool = True
-    poll_seconds: float = 10.0
-    include_camera: bool = True
+    poll_seconds: float = 300.0
+    show_camera_in_status: bool = True
+    include_camera_in_events: bool = True
+    send_idle: bool = False
     states: List[str] = field(default_factory=lambda: [
-        "printing", "paused", "complete", "error", "cancelled",
+        "printing", "paused", "complete", "error", "cancelled", "standby",
     ])
 
 
@@ -78,11 +81,13 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
 
     discord = DiscordConfig(
         token=token,
-        notification_channel_id=int(
-            discord_data.get("notification_channel_id", 0)),
+        status_channel_id=int(discord_data.get(
+            "status_channel_id",
+            discord_data.get("notification_channel_id", 0))),
         allowed_guild_id=int(discord_data.get("allowed_guild_id", 0)),
         public_status_responses=bool(
             discord_data.get("public_status_responses", False)),
+        printer_ui_url=str(discord_data.get("printer_ui_url", "")),
     )
     moonraker = MoonrakerConfig(
         url=str(moonraker_data.get("url", "http://127.0.0.1:7125"))
@@ -98,8 +103,13 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     notifications = NotificationConfig(
         enabled=bool(notification_data.get("enabled", True)),
         poll_seconds=max(2.0, float(
-            notification_data.get("poll_seconds", 10.0))),
-        include_camera=bool(notification_data.get("include_camera", True)),
+            notification_data.get("poll_seconds", 300.0))),
+        show_camera_in_status=bool(notification_data.get(
+            "show_camera_in_status", True)),
+        include_camera_in_events=bool(notification_data.get(
+            "include_camera_in_events",
+            notification_data.get("include_camera", True))),
+        send_idle=bool(notification_data.get("send_idle", False)),
         states=list(notification_data.get(
             "states", NotificationConfig().states)),
     )
