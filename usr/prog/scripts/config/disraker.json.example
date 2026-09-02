@@ -4,7 +4,10 @@
     "status_channel_id": 0,
     "allowed_guild_id": 0,
     "public_status_responses": false,
-    "printer_ui_url": ""
+    "printer_ui_url": "",
+    "job_controls_enabled": true,
+    "control_user_ids": [],
+    "control_role_ids": []
   },
   "moonraker": {
     "url": "http://127.0.0.1:7125",
@@ -13,6 +16,7 @@
     "verify_ssl": true,
     "camera_name": "",
     "snapshot_url": "",
+    "printer_name": "",
     "temperature_objects": [
       "extruder",
       "heater_bed",
@@ -22,10 +26,11 @@
   },
   "notifications": {
     "enabled": true,
-    "poll_seconds": 300,
+    "poll_seconds": 60,
     "show_camera_in_status": true,
     "include_camera_in_events": true,
     "send_idle": false,
+    "state_file": "",
     "states": [
       "printing", "paused", "complete", "error", "cancelled", "standby"
     ]

@@ -3,4 +3,4 @@ __pycache__/
 .venv/
 disraker.json
 *.log
-
+usr/prog/DisRaker/data/

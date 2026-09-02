@@ -16,6 +16,7 @@ class MoonrakerConfig:
     verify_ssl: bool = True
     camera_name: str = ""
     snapshot_url: str = ""
+    printer_name: str = ""
     temperature_objects: List[str] = field(default_factory=lambda: [
         "extruder", "heater_bed", "heater_generic chamber_heater",
         "temperature_sensor chamber",
@@ -29,15 +30,19 @@ class DiscordConfig:
     allowed_guild_id: int = 0
     public_status_responses: bool = False
     printer_ui_url: str = ""
+    job_controls_enabled: bool = True
+    control_user_ids: List[int] = field(default_factory=list)
+    control_role_ids: List[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class NotificationConfig:
     enabled: bool = True
-    poll_seconds: float = 300.0
+    poll_seconds: float = 60.0
     show_camera_in_status: bool = True
     include_camera_in_events: bool = True
     send_idle: bool = False
+    state_file: str = ""
     states: List[str] = field(default_factory=lambda: [
         "printing", "paused", "complete", "error", "cancelled", "standby",
     ])
@@ -77,7 +82,8 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         "DISRAKER_DISCORD_TOKEN", str(discord_data.get("token", ""))).strip()
     if not token:
         raise ValueError(
-            "Set discord.token or the DISRAKER_DISCORD_TOKEN environment variable")
+            "Set discord.token or the DISRAKER_DISCORD_TOKEN "
+            "environment variable")
 
     discord = DiscordConfig(
         token=token,
@@ -88,6 +94,12 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         public_status_responses=bool(
             discord_data.get("public_status_responses", False)),
         printer_ui_url=str(discord_data.get("printer_ui_url", "")),
+        job_controls_enabled=bool(
+            discord_data.get("job_controls_enabled", True)),
+        control_user_ids=[int(user_id) for user_id in
+                          discord_data.get("control_user_ids", [])],
+        control_role_ids=[int(role_id) for role_id in
+                          discord_data.get("control_role_ids", [])],
     )
     moonraker = MoonrakerConfig(
         url=str(moonraker_data.get("url", "http://127.0.0.1:7125"))
@@ -97,19 +109,21 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         verify_ssl=bool(moonraker_data.get("verify_ssl", True)),
         camera_name=str(moonraker_data.get("camera_name", "")),
         snapshot_url=str(moonraker_data.get("snapshot_url", "")),
+        printer_name=str(moonraker_data.get("printer_name", "")).strip(),
         temperature_objects=list(moonraker_data.get(
             "temperature_objects", MoonrakerConfig().temperature_objects)),
     )
     notifications = NotificationConfig(
         enabled=bool(notification_data.get("enabled", True)),
         poll_seconds=max(2.0, float(
-            notification_data.get("poll_seconds", 300.0))),
+            notification_data.get("poll_seconds", 60.0))),
         show_camera_in_status=bool(notification_data.get(
             "show_camera_in_status", True)),
         include_camera_in_events=bool(notification_data.get(
             "include_camera_in_events",
             notification_data.get("include_camera", True))),
         send_idle=bool(notification_data.get("send_idle", False)),
+        state_file=str(notification_data.get("state_file", "")).strip(),
         states=list(notification_data.get(
             "states", NotificationConfig().states)),
     )

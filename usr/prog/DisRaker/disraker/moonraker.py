@@ -44,8 +44,7 @@ class MoonrakerClient:
             raise RuntimeError("MoonrakerClient is not open")
         return self._session
 
-    async def _json(self, method: str, path: str,
-                    **kwargs) -> Dict[str, Any]:
+    async def _json(self, method: str, path: str, **kwargs) -> Any:
         url = urljoin(self.config.url + "/", path.lstrip("/"))
         try:
             async with self.session.request(method, url, **kwargs) as response:
@@ -57,11 +56,11 @@ class MoonrakerClient:
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise MoonrakerError("Unable to contact Moonraker: {}".format(
                 exc)) from exc
+        if not isinstance(payload, dict):
+            raise MoonrakerError("Moonraker returned malformed JSON")
         if "error" in payload:
             raise MoonrakerError("Moonraker error: {}".format(payload["error"]))
         result = payload.get("result", payload)
-        if not isinstance(result, dict):
-            raise MoonrakerError("Unexpected Moonraker response")
         return result
 
     async def status(self) -> Dict[str, Any]:
@@ -69,6 +68,13 @@ class MoonrakerClient:
             "print_stats": None,
             "virtual_sdcard": None,
             "display_status": None,
+            "webhooks": None,
+            "idle_timeout": None,
+            "gcode_move": None,
+            "toolhead": None,
+            "motion_report": None,
+            "fan": None,
+            "system_stats": None,
         }
         for name in self.config.temperature_objects:
             objects[name] = None
@@ -84,7 +90,19 @@ class MoonrakerClient:
         return status
 
     async def printer_info(self) -> Dict[str, Any]:
-        return await self._json("GET", "/printer/info")
+        result = await self._json("GET", "/printer/info")
+        if not isinstance(result, dict):
+            raise MoonrakerError("Moonraker printer info is malformed")
+        return result
+
+    async def pause_print(self):
+        await self._json("POST", "/printer/print/pause")
+
+    async def resume_print(self):
+        await self._json("POST", "/printer/print/resume")
+
+    async def cancel_print(self):
+        await self._json("POST", "/printer/print/cancel")
 
     async def status_updates(self) -> AsyncIterator[Dict[str, Any]]:
         url = urljoin(self.config.url + "/", "websocket")
