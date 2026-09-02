@@ -2,7 +2,8 @@
 
 DisRaker is a Python Discord bot for a Klipper printer managed by Moonraker.
 It posts live Discord status cards with buttons for current print state,
-temperatures, progress, motion data, and a Moonraker-configured camera. It also
+temperatures, progress, motion data, every configured fan, and a
+Moonraker-configured camera. It also
 notifies a configured status channel when a print starts, pauses, completes,
 fails, or is cancelled.
 
@@ -59,7 +60,9 @@ On a printer-side instance, configure:
   "publish_url": "https://discord-bot.example/disraker/v1/status",
   "relay_id": "alice-creator5",
   "secret": "GENERATE_A_LONG_RANDOM_SECRET",
-  "include_camera": false
+  "include_camera": false,
+  "accept_remote_controls": true,
+  "poll_seconds": 5
 }
 ```
 
@@ -77,16 +80,24 @@ configure the listener and authorized sources:
 "relay": {
   "listen_host": "0.0.0.0",
   "listen_port": 7131,
+  "admin_user_ids": [111111111111111111],
+  "admin_role_ids": [],
   "sources": {
     "alice-creator5": {
       "secret": "GENERATE_A_LONG_RANDOM_SECRET",
       "display_name": "Alice's Creator 5",
-      "channel_id": 0
+      "channel_id": 0,
+      "allow_controls": true,
+      "control_user_ids": [222222222222222222],
+      "control_role_ids": []
     },
     "bob-voron": {
       "secret": "A_DIFFERENT_LONG_RANDOM_SECRET",
       "display_name": "Bob's Voron",
-      "channel_id": 123456789012345678
+      "channel_id": 123456789012345678,
+      "allow_controls": false,
+      "control_user_ids": [],
+      "control_role_ids": []
     }
   }
 }
@@ -97,8 +108,15 @@ Requests are signed with HMAC-SHA256 and expire after five minutes. Keep each
 secret private and different. Put the listener behind HTTPS, a VPN, or a TLS
 reverse proxy when it crosses the public internet. Set `include_camera` to
 `true` only when camera forwarding is wanted; image data increases bandwidth.
-The relay forwards status and optional camera images, not remote printer-control
-commands.
+
+Remote controls require both `allow_controls` on the hub source and
+`accept_remote_controls` on the printer. A source's `control_user_ids` and
+`control_role_ids` apply only to that printer. Hub `admin_user_ids` and
+`admin_role_ids` can control every enabled source, as can members with Discord's
+Manage Server permission. If a source has no users or roles, only central
+administrators can control it. Commands are returned in signed relay responses
+and are accepted only when valid for the printer's current state. The relay
+poll interval controls command latency and defaults to five seconds.
 
 The Discord application needs the `bot` and `applications.commands` scopes.
 Recommended channel permissions are View Channel, Send Messages, Embed Links,

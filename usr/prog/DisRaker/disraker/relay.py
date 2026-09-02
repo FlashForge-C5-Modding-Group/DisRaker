@@ -7,7 +7,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import aiohttp
 from aiohttp import web
@@ -52,9 +52,9 @@ class RelayPublisher:
 
     async def publish(self, printer_name: str, status: Dict[str, Any],
                       camera_data: Optional[bytes] = None,
-                      camera_filename: str = "printer.jpg"):
+                      camera_filename: str = "printer.jpg") -> List[str]:
         if self._session is None:
-            return
+            return []
         payload: Dict[str, Any] = {
             "relay_id": self.config.relay_id,
             "printer_name": printer_name,
@@ -84,8 +84,28 @@ class RelayPublisher:
                     raise RuntimeError(
                         "relay returned HTTP {}: {}".format(
                             response.status, detail))
-        except (aiohttp.ClientError, TimeoutError, RuntimeError):
+                response_body = await response.read()
+                response_signature = response.headers.get(
+                    "X-DisRaker-Response-Signature", "")
+                expected_response = _signature(
+                    self.config.secret, timestamp, nonce, response_body)
+                if not hmac.compare_digest(
+                        response_signature, expected_response):
+                    raise RuntimeError("relay response signature is invalid")
+                response_payload = json.loads(response_body.decode("utf-8"))
+                if not isinstance(response_payload, dict):
+                    raise RuntimeError("relay response is malformed")
+                commands = response_payload.get("commands", [])
+                if not isinstance(commands, list):
+                    raise RuntimeError("relay commands are malformed")
+                allowed = {"pause", "resume", "cancel"}
+                return [str(item.get("action")) for item in commands
+                        if isinstance(item, dict)
+                        and item.get("action") in allowed]
+        except (aiohttp.ClientError, TimeoutError, RuntimeError,
+                UnicodeError, json.JSONDecodeError):
             LOG.warning("Unable to publish relay status", exc_info=True)
+            return []
 
 
 RelayCallback = Callable[[RelayStatus, RelaySourceConfig], Awaitable[None]]
@@ -97,6 +117,14 @@ class RelayServer:
         self.callback = callback
         self._runner: Optional[web.AppRunner] = None
         self._seen_nonces: Dict[str, int] = {}
+        self._commands: Dict[str, List[Dict[str, str]]] = {}
+
+    def enqueue_command(self, relay_id: str, action: str):
+        if action not in ("pause", "resume", "cancel"):
+            raise ValueError("Unsupported relay command")
+        queue = self._commands.setdefault(relay_id, [])
+        queue.append({"id": secrets.token_hex(12), "action": action})
+        del queue[:-10]
 
     async def start(self):
         if not self.config.listen_host:
@@ -176,4 +204,16 @@ class RelayServer:
                 json.JSONDecodeError) as exc:
             raise web.HTTPBadRequest(text="Invalid relay payload") from exc
         await self.callback(relay_status, source)
-        return web.json_response({"ok": True})
+        commands = self._commands.pop(relay_id, [])
+        response_body = json.dumps(
+            {"ok": True, "commands": commands},
+            separators=(",", ":")).encode("utf-8")
+        response_signature = _signature(
+            source.secret, timestamp, nonce, response_body)
+        return web.Response(
+            body=response_body,
+            content_type="application/json",
+            headers={
+                "X-DisRaker-Response-Signature": response_signature,
+            },
+        )

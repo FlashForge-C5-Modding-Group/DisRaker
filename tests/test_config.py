@@ -17,11 +17,16 @@ class ConfigTests(unittest.TestCase):
             "moonraker": {"printer_name": "Creator 5"},
             "relay": {
                 "listen_host": "127.0.0.1",
+                "admin_user_ids": [111],
+                "admin_role_ids": [222],
                 "sources": {
                     "remote-c5": {
                         "secret": "test-secret",
                         "display_name": "Remote C5",
                         "channel_id": 99,
+                        "allow_controls": True,
+                        "control_user_ids": [777],
+                        "control_role_ids": [888],
                     }
                 },
             },
@@ -37,6 +42,11 @@ class ConfigTests(unittest.TestCase):
         source = config.relay.sources["remote-c5"]
         self.assertEqual(source.display_name, "Remote C5")
         self.assertEqual(source.channel_id, 99)
+        self.assertTrue(source.allow_controls)
+        self.assertEqual(source.control_user_ids, [777])
+        self.assertEqual(source.control_role_ids, [888])
+        self.assertEqual(config.relay.admin_user_ids, [111])
+        self.assertEqual(config.relay.admin_role_ids, [222])
 
     def test_publisher_requires_identity_and_secret(self):
         data = {

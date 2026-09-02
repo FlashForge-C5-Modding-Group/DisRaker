@@ -40,8 +40,12 @@
     "relay_id": "",
     "secret": "",
     "include_camera": false,
+    "accept_remote_controls": false,
+    "poll_seconds": 5,
     "listen_host": "",
     "listen_port": 7131,
+    "admin_user_ids": [],
+    "admin_role_ids": [],
     "sources": {}
   }
 }

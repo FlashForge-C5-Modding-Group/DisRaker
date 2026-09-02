@@ -22,6 +22,7 @@ class MoonrakerClient:
     def __init__(self, config: MoonrakerConfig):
         self.config = config
         self._session: Optional[aiohttp.ClientSession] = None
+        self._fan_objects: Optional[list] = None
 
     async def __aenter__(self):
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
@@ -76,6 +77,19 @@ class MoonrakerClient:
             "fan": None,
             "system_stats": None,
         }
+        if self._fan_objects is None:
+            result = await self._json("GET", "/printer/objects/list")
+            loaded = result.get("objects", [])
+            fan_prefixes = (
+                "fan_generic ", "heater_fan ", "controller_fan ",
+                "temperature_fan ",
+            )
+            self._fan_objects = [
+                name for name in loaded
+                if name == "fan" or name.startswith(fan_prefixes)
+            ]
+        for name in self._fan_objects:
+            objects[name] = None
         for name in self.config.temperature_objects:
             objects[name] = None
         result = await self._json("POST", "/server/jsonrpc", json={

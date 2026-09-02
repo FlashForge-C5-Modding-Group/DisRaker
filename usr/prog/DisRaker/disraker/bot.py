@@ -89,16 +89,34 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
         )
 
     gcode_move = status.get("gcode_move", {})
-    fan = status.get("fan", {})
     performance = []
     if gcode_move:
         performance.append("Speed {:.0f}%".format(
             100.0 * _number(gcode_move.get("speed_factor"), 1.0)))
         performance.append("Flow {:.0f}%".format(
             100.0 * _number(gcode_move.get("extrude_factor"), 1.0)))
-    if fan:
-        performance.append("Fan {:.0f}%".format(
-            100.0 * _number(fan.get("speed"))))
+    fan_prefixes = (
+        "fan_generic ", "heater_fan ", "controller_fan ",
+        "temperature_fan ",
+    )
+    fans = []
+    for name, values in status.items():
+        if name != "fan" and not name.startswith(fan_prefixes):
+            continue
+        if not isinstance(values, dict) or "speed" not in values:
+            continue
+        if name == "fan":
+            label = "Part cooling"
+        else:
+            label = name.split(" ", 1)[1].replace("_", " ").title()
+        fan_status = "{} {:.0f}%".format(
+            label, 100.0 * _number(values.get("speed")))
+        rpm = _number(values.get("rpm"))
+        if rpm:
+            fan_status += " ({:.0f} RPM)".format(rpm)
+        fans.append(fan_status)
+    if fans:
+        performance.extend(fans)
     if performance:
         embed.add_field(name="Performance", value=" • ".join(performance),
                         inline=False)
@@ -328,6 +346,85 @@ class CancelConfirmationView(discord.ui.View):
             content="Cancellation dismissed.", view=None)
 
 
+class RelayActionButton(discord.ui.Button):
+    def __init__(self, bot: "DisRakerBot", relay_id: str, action: str):
+        styles = {
+            "pause": discord.ButtonStyle.secondary,
+            "resume": discord.ButtonStyle.success,
+            "cancel": discord.ButtonStyle.danger,
+        }
+        labels = {"pause": "Pause", "resume": "Resume", "cancel": "Cancel"}
+        super().__init__(
+            label=labels[action], style=styles[action],
+            custom_id="disraker:relay:{}:{}".format(relay_id, action),
+        )
+        self.bot = bot
+        self.relay_id = relay_id
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await self.bot.require_relay_control_access(
+                interaction, self.relay_id):
+            return
+        if self.action == "cancel":
+            await interaction.response.send_message(
+                "Cancel this remote printer's current print?",
+                view=RelayCancelConfirmationView(
+                    self.bot, self.relay_id),
+                ephemeral=True,
+            )
+            return
+        if not self.bot.queue_relay_command(self.relay_id, self.action):
+            await interaction.response.send_message(
+                "That action is not valid for the printer's current state.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "{} queued for the printer.".format(self.action.title()),
+            ephemeral=True,
+        )
+
+
+class RemotePrinterView(discord.ui.View):
+    def __init__(self, bot: "DisRakerBot", relay_id: str, state: str):
+        super().__init__(timeout=None)
+        for action in ("pause", "resume", "cancel"):
+            button = RelayActionButton(bot, relay_id, action)
+            button.disabled = not bot.relay_action_available(action, state)
+            self.add_item(button)
+
+
+class RelayCancelConfirmationView(discord.ui.View):
+    def __init__(self, bot: "DisRakerBot", relay_id: str):
+        super().__init__(timeout=30.0)
+        self.bot = bot
+        self.relay_id = relay_id
+
+    @discord.ui.button(label="Confirm remote cancel",
+                       style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction,
+                      button: discord.ui.Button):
+        del button
+        if not await self.bot.require_relay_control_access(
+                interaction, self.relay_id):
+            return
+        if not self.bot.queue_relay_command(self.relay_id, "cancel"):
+            await interaction.response.edit_message(
+                content="That print is no longer active.", view=None)
+            return
+        await interaction.response.edit_message(
+            content="Cancellation queued for the printer.", view=None)
+
+    @discord.ui.button(label="Keep printing",
+                       style=discord.ButtonStyle.secondary)
+    async def dismiss(self, interaction: discord.Interaction,
+                      button: discord.ui.Button):
+        del button
+        await interaction.response.edit_message(
+            content="Remote cancellation dismissed.", view=None)
+
+
 class DisRakerBot(commands.Bot):
     def __init__(self, config: AppConfig, moonraker: MoonrakerClient):
         super().__init__(command_prefix=commands.when_mentioned,
@@ -353,12 +450,17 @@ class DisRakerBot(commands.Bot):
             config.relay, self.handle_relay_status)
         self._state_lock = asyncio.Lock()
         self._relay_lock = asyncio.Lock()
+        self._publisher_lock = asyncio.Lock()
         self._realtime_task = None
 
     async def setup_hook(self):
         self.add_view(PrinterView(self))
         await self._relay_publisher.start()
         await self._relay_server.start()
+        self.relay_poll.change_interval(
+            seconds=self.config.relay.poll_seconds)
+        if self.config.relay.publish_url:
+            self.relay_poll.start()
         self.notification_poll.change_interval(
             seconds=self.config.notifications.poll_seconds)
         if self.config.notifications.enabled:
@@ -368,6 +470,8 @@ class DisRakerBot(commands.Bot):
     async def close(self):
         if self._realtime_task is not None:
             self._realtime_task.cancel()
+        if self.relay_poll.is_running():
+            self.relay_poll.cancel()
         await self._relay_server.close()
         await self._relay_publisher.close()
         await super().close()
@@ -420,6 +524,51 @@ class DisRakerBot(commands.Bot):
             ephemeral=True,
         )
         return False
+
+    async def require_relay_control_access(
+            self, interaction: discord.Interaction, relay_id: str):
+        source = self.config.relay.sources.get(relay_id)
+        if source is None or not source.allow_controls:
+            await interaction.response.send_message(
+                "Controls are disabled for this printer.", ephemeral=True)
+            return False
+        user_id = interaction.user.id
+        roles = getattr(interaction.user, "roles", [])
+        role_ids = {getattr(role, "id", 0) for role in roles}
+        admin_users = set(self.config.relay.admin_user_ids)
+        admin_roles = set(self.config.relay.admin_role_ids)
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        central_admin = (
+            user_id in admin_users
+            or bool(role_ids & admin_roles)
+            or bool(permissions and permissions.manage_guild)
+        )
+        allowed = (
+            user_id in set(source.control_user_ids)
+            or bool(role_ids & set(source.control_role_ids))
+        )
+        if central_admin or allowed:
+            return True
+        await interaction.response.send_message(
+            "You cannot control this printer.", ephemeral=True)
+        return False
+
+    @staticmethod
+    def relay_action_available(action: str, state: str) -> bool:
+        return (
+            (action == "pause" and state == "printing")
+            or (action == "resume" and state == "paused")
+            or (action == "cancel" and state in ("printing", "paused"))
+        )
+
+    def queue_relay_command(self, relay_id: str, action: str) -> bool:
+        observation = self._relay_observations.get(relay_id)
+        if observation is None:
+            return False
+        if not self.relay_action_available(action, observation.state):
+            return False
+        self._relay_server.enqueue_command(relay_id, action)
+        return True
 
     async def send_status(self, interaction: discord.Interaction,
                           ephemeral: bool):
@@ -480,11 +629,38 @@ class DisRakerBot(commands.Bot):
                 camera_filename = camera.filename
             except MoonrakerError:
                 LOG.warning("Camera unavailable for relay", exc_info=True)
-        await self._relay_publisher.publish(
-            await self.printer_name(), status,
-            camera_data=camera_data,
-            camera_filename=camera_filename,
-        )
+        async with self._publisher_lock:
+            commands = await self._relay_publisher.publish(
+                await self.printer_name(), status,
+                camera_data=camera_data,
+                camera_filename=camera_filename,
+            )
+            try:
+                await self.apply_relay_commands(commands)
+            except MoonrakerError:
+                LOG.exception("Unable to apply a remote printer command")
+
+    async def apply_relay_commands(self, commands):
+        if not commands:
+            return
+        if not self.config.relay.accept_remote_controls:
+            LOG.warning("Ignoring remote commands; controls are disabled")
+            return
+        status = await self.moonraker.status()
+        state = str(status.get("print_stats", {}).get("state", ""))
+        for action in commands:
+            if action == "pause" and state == "printing":
+                await self.moonraker.pause_print()
+                state = "paused"
+            elif action == "resume" and state == "paused":
+                await self.moonraker.resume_print()
+                state = "printing"
+            elif action == "cancel" and state in ("printing", "paused"):
+                await self.moonraker.cancel_print()
+                state = "cancelled"
+            else:
+                LOG.warning("Ignoring relay command %s in state %s",
+                            action, state)
 
     async def handle_relay_status(self, relay: RelayStatus, source):
         async with self._relay_lock:
@@ -504,6 +680,9 @@ class DisRakerBot(commands.Bot):
             return
         embed = status_embed(relay.status, printer_name)
         kwargs: Dict[str, Any] = {"embed": embed}
+        if source.allow_controls:
+            kwargs["view"] = RemotePrinterView(
+                self, relay.relay_id, observation.state)
         if relay.camera_data is not None:
             image = discord.File(
                 BytesIO(relay.camera_data), relay.camera_filename)
@@ -511,6 +690,11 @@ class DisRakerBot(commands.Bot):
             embed.set_image(url="attachment://{}".format(
                 relay.camera_filename))
         if changed or message is None:
+            if changed and message is not None:
+                try:
+                    await message.edit(view=None)
+                except discord.NotFound:
+                    pass
             kwargs.pop("attachments", None)
             if relay.camera_data is not None:
                 kwargs["file"] = discord.File(
@@ -575,7 +759,8 @@ class DisRakerBot(commands.Bot):
             changed = observation.is_new_transition(previous)
             self._last_observation = observation
             self._state_store.save(observation)
-            await self.publish_relay_status(status)
+            if changed and self.config.relay.publish_url:
+                await self.publish_relay_status(status)
             channel = await self.status_channel()
             if channel is None:
                 return
@@ -627,6 +812,18 @@ class DisRakerBot(commands.Bot):
 
     @notification_poll.before_loop
     async def before_notification_poll(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(seconds=5.0)
+    async def relay_poll(self):
+        try:
+            status = await self.moonraker.status()
+            await self.publish_relay_status(status)
+        except MoonrakerError:
+            LOG.exception("Moonraker relay poll failed")
+
+    @relay_poll.before_loop
+    async def before_relay_poll(self):
         await self.wait_until_ready()
 
 

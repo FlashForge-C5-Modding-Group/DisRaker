@@ -53,6 +53,9 @@ class RelaySourceConfig:
     secret: str
     display_name: str = ""
     channel_id: int = 0
+    allow_controls: bool = False
+    control_user_ids: List[int] = field(default_factory=list)
+    control_role_ids: List[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -61,8 +64,12 @@ class RelayConfig:
     relay_id: str = ""
     secret: str = ""
     include_camera: bool = False
+    accept_remote_controls: bool = False
+    poll_seconds: float = 5.0
     listen_host: str = ""
     listen_port: int = 7131
+    admin_user_ids: List[int] = field(default_factory=list)
+    admin_role_ids: List[int] = field(default_factory=list)
     sources: Dict[str, RelaySourceConfig] = field(default_factory=dict)
 
 
@@ -159,19 +166,37 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
             secret=str(source.get("secret", "")),
             display_name=str(source.get("display_name", "")).strip(),
             channel_id=int(source.get("channel_id", 0)),
+            allow_controls=bool(source.get("allow_controls", False)),
+            control_user_ids=[int(user_id) for user_id in
+                              source.get("control_user_ids", [])],
+            control_role_ids=[int(role_id) for role_id in
+                              source.get("control_role_ids", [])],
         )
     relay = RelayConfig(
         publish_url=str(relay_data.get("publish_url", "")).strip(),
         relay_id=str(relay_data.get("relay_id", "")).strip(),
         secret=str(relay_data.get("secret", "")),
         include_camera=bool(relay_data.get("include_camera", False)),
+        accept_remote_controls=bool(
+            relay_data.get("accept_remote_controls", False)),
+        poll_seconds=max(2.0, float(
+            relay_data.get("poll_seconds", 5.0))),
         listen_host=str(relay_data.get("listen_host", "")).strip(),
         listen_port=int(relay_data.get("listen_port", 7131)),
+        admin_user_ids=[int(user_id) for user_id in
+                        relay_data.get("admin_user_ids", [])],
+        admin_role_ids=[int(role_id) for role_id in
+                        relay_data.get("admin_role_ids", [])],
         sources=sources,
     )
     if relay.publish_url and (not relay.relay_id or not relay.secret):
         raise ValueError(
             "relay publishing requires relay_id and secret")
+    relay_ids = list(sources)
+    if relay.relay_id:
+        relay_ids.append(relay.relay_id)
+    if any(len(relay_id) > 48 for relay_id in relay_ids):
+        raise ValueError("relay IDs must be 48 characters or fewer")
     if relay.listen_host:
         missing = [name for name, source in sources.items()
                    if not source.secret]
