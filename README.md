@@ -27,6 +27,8 @@ the current live card. A pause, resume, completion, cancellation, error, or
 other state transition creates a new card. Set `notifications.poll_seconds`
 to change the interval. Print-state transitions additionally use Moonraker's
 WebSocket subscription, so start/pause/finish messages do not wait for a poll.
+Cancellation and error card IDs are remembered. Those old terminal cards are
+deleted when DisRaker restarts or when that printer begins a new print.
 `show_camera_in_status` controls the dashboard image,
 `include_camera_in_events` controls event-message images, and `send_idle`
 enables or disables idle transition messages. Camera selection uses

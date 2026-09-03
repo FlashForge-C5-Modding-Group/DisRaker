@@ -298,6 +298,7 @@ class DisRakerBot(commands.Bot):
         self.config = config
         self.moonrakers = moonrakers
         self._commands_synced = False
+        self._startup_cleanup_done = False
         self._names: Dict[str, str] = {}
         self._messages: Dict[str, discord.Message] = {}
         self._observations: Dict[str, Optional[PrintObservation]] = {}
@@ -357,6 +358,10 @@ class DisRakerBot(commands.Bot):
             else:
                 await self.tree.sync()
             self._commands_synced = True
+        if not self._startup_cleanup_done:
+            for printer_id in self.config.printers:
+                await self.delete_terminal_message(printer_id)
+            self._startup_cleanup_done = True
         LOG.info("Logged in as %s with %d printers",
                  self.user, len(self.config.printers))
 
@@ -515,6 +520,37 @@ class DisRakerBot(commands.Bot):
                 return None
         return channel
 
+    async def delete_terminal_message(self, printer_id: str, channel=None):
+        terminal = self._stores[printer_id].terminal_message()
+        if terminal is None:
+            return
+        _state, message_id = terminal
+        message = self._messages.get(printer_id)
+        if message is None or message.id != message_id:
+            channel = channel or await self.status_channel(printer_id)
+            if channel is None:
+                return
+            try:
+                message = await channel.fetch_message(message_id)
+            except discord.NotFound:
+                self._stores[printer_id].clear_terminal_message()
+                return
+            except discord.DiscordException:
+                LOG.exception(
+                    "Unable to fetch old terminal card for %s", printer_id)
+                return
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.DiscordException:
+            LOG.exception(
+                "Unable to delete old terminal card for %s", printer_id)
+            return
+        if self._messages.get(printer_id) is message:
+            self._messages.pop(printer_id, None)
+        self._stores[printer_id].clear_terminal_message()
+
     async def send_status(self, interaction: discord.Interaction,
                           printer_id: str, ephemeral: bool):
         await interaction.response.defer(ephemeral=ephemeral, thinking=True)
@@ -606,6 +642,8 @@ class DisRakerBot(commands.Bot):
             if channel is None:
                 return
             state = observation.state
+            if changed and state == "printing":
+                await self.delete_terminal_message(printer_id, channel)
             notify = changed and (
                 state in self.config.notifications.states
                 and (state != "standby"
@@ -615,10 +653,18 @@ class DisRakerBot(commands.Bot):
                 message = await self.send_state_event(
                     printer_id, channel, status, state, previous)
                 self._messages[printer_id] = message
+                if state in ("cancelled", "error"):
+                    self._stores[printer_id].save_terminal_message(
+                        state, message.id)
                 return
             if changed or state == "printing":
                 await self.update_dashboard(
                     printer_id, channel, status, force_new=changed)
+                if changed and state in ("cancelled", "error"):
+                    message = self._messages.get(printer_id)
+                    if message is not None:
+                        self._stores[printer_id].save_terminal_message(
+                            state, message.id)
 
     async def realtime_monitor(self, printer_id: str):
         await self.wait_until_ready()

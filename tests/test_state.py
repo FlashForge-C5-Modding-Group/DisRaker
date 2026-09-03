@@ -23,6 +23,18 @@ class PrintObservationTests(unittest.TestCase):
             store.save(expected)
             self.assertEqual(store.load(), expected)
 
+    def test_terminal_message_survives_observation_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrintStateStore(Path(directory) / "state.json")
+            store.save(PrintObservation("cancelled", "part.gcode", 30.0))
+            store.save_terminal_message("cancelled", 12345)
+            store.save(PrintObservation("standby", "part.gcode", 30.0))
+            self.assertEqual(
+                store.terminal_message(), ("cancelled", 12345))
+            store.clear_terminal_message()
+            self.assertIsNone(store.terminal_message())
+            self.assertEqual(store.load().state, "standby")
+
 
 if __name__ == "__main__":
     unittest.main()
