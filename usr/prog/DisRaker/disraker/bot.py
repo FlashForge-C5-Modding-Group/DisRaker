@@ -518,6 +518,7 @@ class DisRakerBot(commands.Bot):
         self._names: Dict[str, str] = {}
         self._messages: Dict[str, discord.Message] = {}
         self._observations: Dict[str, Optional[PrintObservation]] = {}
+        self._online: Dict[str, Optional[bool]] = {}
         self._stores: Dict[str, PrintStateStore] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
         self._realtime_tasks = []
@@ -525,6 +526,7 @@ class DisRakerBot(commands.Bot):
             store = PrintStateStore(self._state_path(printer_id))
             self._stores[printer_id] = store
             self._observations[printer_id] = store.load()
+            self._online[printer_id] = store.connectivity()
             self._locks[printer_id] = asyncio.Lock()
 
     def _state_path(self, printer_id: str) -> Path:
@@ -868,7 +870,7 @@ class DisRakerBot(commands.Bot):
         return await channel.send(**kwargs)
 
     async def process_status(self, printer_id: str,
-                             status: Dict[str, Any]):
+                             status: Dict[str, Any], recovered: bool = False):
         async with self._locks[printer_id]:
             observation = PrintObservation.from_status(status)
             previous = self._observations[printer_id]
@@ -879,6 +881,17 @@ class DisRakerBot(commands.Bot):
             if channel is None:
                 return
             state = observation.state
+            if recovered:
+                embed, image = await self.status_content(printer_id, status)
+                kwargs = {
+                    "content": "🟢 **{} is back online.**".format(
+                        await self.printer_name(printer_id)),
+                    "embed": embed,
+                    "view": PrinterView(self, printer_id, state=state),
+                }
+                if image is not None:
+                    kwargs["file"] = image
+                self._messages[printer_id] = await channel.send(**kwargs)
             if changed and state == "printing":
                 await self.delete_terminal_message(printer_id, channel)
             notify = changed and (
@@ -902,6 +915,32 @@ class DisRakerBot(commands.Bot):
                     if message is not None:
                         self._stores[printer_id].save_terminal_message(
                             state, message.id)
+
+    async def mark_offline(self, printer_id: str, error: MoonrakerError):
+        if self._online[printer_id] is False:
+            return
+        self._online[printer_id] = False
+        self._stores[printer_id].save_connectivity(False)
+        channel = await self.status_channel(printer_id)
+        if channel is None:
+            return
+        printer_name = await self.printer_name(printer_id)
+        embed = discord.Embed(
+            title="{} - Offline".format(printer_name),
+            description=(
+                "Moonraker or Klipper could not be reached. DisRaker will "
+                "keep checking automatically.\n\n`{}`".format(
+                    str(error)[:900])
+            )[:4096],
+            color=discord.Color.red(),
+        )
+        embed.set_footer(text="DisRaker connectivity monitor")
+        embed.timestamp = discord.utils.utcnow()
+        self._messages[printer_id] = await channel.send(
+            content="🔴 **{} is offline.**".format(printer_name),
+            embed=embed,
+            view=PrinterView(self, printer_id),
+        )
 
     async def realtime_monitor(self, printer_id: str):
         await self.wait_until_ready()
@@ -933,9 +972,20 @@ class DisRakerBot(commands.Bot):
     async def _poll_printer(self, printer_id: str):
         try:
             status = await self.client(printer_id).status()
-            await self.process_status(printer_id, status)
-        except (MoonrakerError, discord.DiscordException):
-            LOG.exception("Moonraker poll failed for %s", printer_id)
+            recovered = self._online[printer_id] is False
+            self._online[printer_id] = True
+            self._stores[printer_id].save_connectivity(True)
+            await self.process_status(printer_id, status, recovered=recovered)
+        except MoonrakerError as exc:
+            LOG.warning("Moonraker poll failed for %s", printer_id,
+                        exc_info=True)
+            try:
+                await self.mark_offline(printer_id, exc)
+            except discord.DiscordException:
+                LOG.exception(
+                    "Unable to send offline notification for %s", printer_id)
+        except discord.DiscordException:
+            LOG.exception("Discord status update failed for %s", printer_id)
 
     @tasks.loop(seconds=10.0)
     async def notification_poll(self):

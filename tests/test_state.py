@@ -35,6 +35,18 @@ class PrintObservationTests(unittest.TestCase):
             self.assertIsNone(store.terminal_message())
             self.assertEqual(store.load().state, "standby")
 
+    def test_connectivity_state_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            store = PrintStateStore(path)
+            self.assertIsNone(store.connectivity())
+            store.save_connectivity(False)
+            self.assertFalse(PrintStateStore(path).connectivity())
+            store.save(PrintObservation("printing", "part.gcode", 10.0))
+            self.assertFalse(store.connectivity())
+            store.save_connectivity(True)
+            self.assertTrue(PrintStateStore(path).connectivity())
+
 
 if __name__ == "__main__":
     unittest.main()

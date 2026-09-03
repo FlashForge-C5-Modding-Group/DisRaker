@@ -82,6 +82,15 @@ class PrintStateStore:
         data.update(asdict(observation))
         self._write(data)
 
+    def connectivity(self) -> Optional[bool]:
+        value = self._read().get("moonraker_online")
+        return value if isinstance(value, bool) else None
+
+    def save_connectivity(self, online: bool):
+        data = self._read()
+        data["moonraker_online"] = bool(online)
+        self._write(data)
+
     def terminal_message(self) -> Optional[Tuple[str, int]]:
         data = self._read()
         try:

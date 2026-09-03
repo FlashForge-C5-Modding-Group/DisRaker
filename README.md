@@ -27,6 +27,12 @@ the current live card. A pause, resume, completion, cancellation, error, or
 other state transition creates a new card. Set `notifications.poll_seconds`
 to change the interval. Print-state transitions additionally use Moonraker's
 WebSocket subscription, so start/pause/finish messages do not wait for a poll.
+If a poll cannot reach Moonraker or Klipper, DisRaker posts one offline card
+without active print controls. Repeated failures do not create more cards.
+When the printer responds again, it posts a back-online card containing the
+current print state. Connectivity is saved in the state file, preventing a
+bot restart from repeating an existing offline alert. Connectivity monitoring
+runs when `notifications.enabled` is true.
 Cancellation and error card IDs are remembered. Those old terminal cards are
 deleted when DisRaker restarts or when that printer begins a new print.
 `show_camera_in_status` controls the dashboard image,
