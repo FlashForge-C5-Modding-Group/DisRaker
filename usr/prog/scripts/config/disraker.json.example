@@ -4,25 +4,9 @@
     "status_channel_id": 0,
     "allowed_guild_id": 0,
     "public_status_responses": false,
-    "printer_ui_url": "",
     "job_controls_enabled": true,
     "control_user_ids": [],
     "control_role_ids": []
-  },
-  "moonraker": {
-    "url": "http://127.0.0.1:7125",
-    "api_key": "",
-    "timeout_seconds": 10,
-    "verify_ssl": true,
-    "camera_name": "",
-    "snapshot_url": "",
-    "printer_name": "",
-    "temperature_objects": [
-      "extruder",
-      "heater_bed",
-      "heater_generic chamber_heater",
-      "temperature_sensor chamber"
-    ]
   },
   "notifications": {
     "enabled": true,
@@ -35,17 +19,56 @@
       "printing", "paused", "complete", "error", "cancelled", "standby"
     ]
   },
-  "relay": {
-    "publish_url": "",
-    "relay_id": "",
-    "secret": "",
-    "include_camera": false,
-    "accept_remote_controls": false,
-    "poll_seconds": 5,
-    "listen_host": "",
-    "listen_port": 7131,
-    "admin_user_ids": [],
-    "admin_role_ids": [],
-    "sources": {}
+  "printers": {
+    "creator5": {
+      "name": "Creator 5 Pro",
+      "status_channel_id": 0,
+      "printer_ui_url": "http://creator5.local/",
+      "control_user_ids": [],
+      "control_role_ids": [],
+      "mention_user_ids": [],
+      "mention_role_ids": [],
+      "mention_states": [
+        "printing", "paused", "complete", "cancelled", "error"
+      ],
+      "moonraker": {
+        "url": "http://creator5.local:7125",
+        "api_key": "",
+        "timeout_seconds": 10,
+        "verify_ssl": true,
+        "camera_name": "",
+        "snapshot_url": "",
+        "temperature_objects": [
+          "extruder",
+          "heater_bed",
+          "heater_generic chamber_heater",
+          "temperature_sensor chamber"
+        ]
+      }
+    },
+    "second-printer": {
+      "name": "Second Printer",
+      "status_channel_id": 0,
+      "printer_ui_url": "http://second-printer.local/",
+      "control_user_ids": [],
+      "control_role_ids": [],
+      "mention_user_ids": [],
+      "mention_role_ids": [],
+      "mention_states": [
+        "printing", "paused", "complete", "cancelled", "error"
+      ],
+      "moonraker": {
+        "url": "http://second-printer.local:7125",
+        "api_key": "",
+        "timeout_seconds": 10,
+        "verify_ssl": true,
+        "camera_name": "",
+        "snapshot_url": "",
+        "temperature_objects": [
+          "extruder",
+          "heater_bed"
+        ]
+      }
+    }
   }
 }

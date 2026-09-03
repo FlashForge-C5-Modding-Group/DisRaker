@@ -1,6 +1,6 @@
 # DisRaker
 
-DisRaker is a Python Discord bot for a Klipper printer managed by Moonraker.
+DisRaker is a Python Discord bot for Klipper printers managed by Moonraker.
 It posts live Discord status cards with buttons for current print state,
 temperatures, progress, motion data, every configured fan, and a
 Moonraker-configured camera. It also
@@ -33,90 +33,59 @@ enables or disables idle transition messages. Camera selection uses
 Moonraker's webcam list and the configured `camera_name`; `snapshot_url` can
 override it explicitly.
 
-Set `moonraker.printer_name` to choose the displayed name. If it is empty,
-DisRaker uses the hostname returned by Moonraker. Print state is saved beneath
+Set each printer's `name` to choose its displayed name. If it is empty,
+DisRaker uses the hostname returned by that Moonraker. Print state is saved
+beneath
 `usr/prog/DisRaker/data`, preventing a restart during a print from sending a
 duplicate start notification. `notifications.state_file` can override that
 location.
 
 The status controls support pause, resume, and confirmed cancellation through
 Moonraker. Set `discord.job_controls_enabled` to `false` to disable them. Add
-Discord account IDs to `control_user_ids` and/or role IDs to
-`control_role_ids` to restrict control access. If both lists are empty, anyone
-who can see the status card may use the controls. Members with Manage Server
-permission are always allowed when an allowlist is active.
+Discord account IDs to the global `discord.control_user_ids` and/or role IDs
+to `discord.control_role_ids` to create central administrators. Each printer
+may also define its own `control_user_ids` and `control_role_ids`. If every
+applicable list is empty, anyone who can see the card may use its controls.
+Members with Manage Server permission are always central administrators.
 
-## Multi-printer relay
+## Multiple Moonraker printers
 
-DisRaker can securely forward a printer's Moonraker status to a central
-DisRaker Discord bot. Moonraker itself does not need to be exposed. Every
-publisher has a unique relay ID and HMAC secret, allowing one hub to collect
-status from multiple people's printers.
+One DisRaker process can connect directly to multiple Moonraker instances.
+Each printer has an independent URL, camera, name, status channel, controls,
+remembered print state, and notification mentions.
 
-On a printer-side instance, configure:
-
-```json
-"relay": {
-  "publish_url": "https://discord-bot.example/disraker/v1/status",
-  "relay_id": "alice-creator5",
-  "secret": "GENERATE_A_LONG_RANDOM_SECRET",
-  "include_camera": false,
-  "accept_remote_controls": true,
-  "poll_seconds": 5
-}
-```
-
-The printer-side `status_channel_id` may be `0` if only the central bot should
-post status. The publisher still needs a Discord bot token because DisRaker is
-run as a Discord bot process.
-
-On the central instance, disable local polling if it has no local printer and
-configure the listener and authorized sources:
+Define printers by a short unique ID:
 
 ```json
-"notifications": {
-  "enabled": false
-},
-"relay": {
-  "listen_host": "0.0.0.0",
-  "listen_port": 7131,
-  "admin_user_ids": [111111111111111111],
-  "admin_role_ids": [],
-  "sources": {
-    "alice-creator5": {
-      "secret": "GENERATE_A_LONG_RANDOM_SECRET",
-      "display_name": "Alice's Creator 5",
-      "channel_id": 0,
-      "allow_controls": true,
-      "control_user_ids": [222222222222222222],
-      "control_role_ids": []
-    },
-    "bob-voron": {
-      "secret": "A_DIFFERENT_LONG_RANDOM_SECRET",
-      "display_name": "Bob's Voron",
-      "channel_id": 123456789012345678,
-      "allow_controls": false,
-      "control_user_ids": [],
-      "control_role_ids": []
+"printers": {
+  "creator5": {
+    "name": "Creator 5 Pro",
+    "status_channel_id": 123456789012345678,
+    "control_user_ids": [111111111111111111],
+    "control_role_ids": [],
+    "mention_user_ids": [111111111111111111],
+    "mention_role_ids": [222222222222222222],
+    "mention_states": [
+      "printing", "paused", "complete", "cancelled", "error"
+    ],
+    "moonraker": {
+      "url": "http://creator5.local:7125",
+      "api_key": "",
+      "camera_name": ""
     }
   }
 }
 ```
 
-A source `channel_id` of `0` uses the hub's normal `status_channel_id`.
-Requests are signed with HMAC-SHA256 and expire after five minutes. Keep each
-secret private and different. Put the listener behind HTTPS, a VPN, or a TLS
-reverse proxy when it crosses the public internet. Set `include_camera` to
-`true` only when camera forwarding is wanted; image data increases bandwidth.
+A printer `status_channel_id` of `0` uses the global Discord status channel.
+Users and roles listed under `mention_user_ids` and `mention_role_ids` are
+pinged for states in `mention_states`. The defaults cover print start, pause,
+completion, cancellation, and errors. Add `resumed` if resumed prints should
+also trigger a ping. Use `/printers` to list configured IDs;
+`/printer` and `/dashboard` provide printer selection with autocomplete.
 
-Remote controls require both `allow_controls` on the hub source and
-`accept_remote_controls` on the printer. A source's `control_user_ids` and
-`control_role_ids` apply only to that printer. Hub `admin_user_ids` and
-`admin_role_ids` can control every enabled source, as can members with Discord's
-Manage Server permission. If a source has no users or roles, only central
-administrators can control it. Commands are returned in signed relay responses
-and are accepted only when valid for the printer's current state. The relay
-poll interval controls command latency and defaults to five seconds.
+The former top-level `moonraker` section remains supported as a single-printer
+compatibility mode.
 
 The Discord application needs the `bot` and `applications.commands` scopes.
 Recommended channel permissions are View Channel, Send Messages, Embed Links,

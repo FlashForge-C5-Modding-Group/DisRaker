@@ -79,14 +79,18 @@ class MoonrakerClient:
         }
         if self._fan_objects is None:
             result = await self._json("GET", "/printer/objects/list")
+            if not isinstance(result, dict):
+                raise MoonrakerError("Moonraker object list is malformed")
             loaded = result.get("objects", [])
+            if not isinstance(loaded, list):
+                raise MoonrakerError("Moonraker object list is malformed")
             fan_prefixes = (
                 "fan_generic ", "heater_fan ", "controller_fan ",
                 "temperature_fan ",
             )
             self._fan_objects = [
-                name for name in loaded
-                if name == "fan" or name.startswith(fan_prefixes)
+                name for name in loaded if isinstance(name, str)
+                and (name == "fan" or name.startswith(fan_prefixes))
             ]
         for name in self._fan_objects:
             objects[name] = None

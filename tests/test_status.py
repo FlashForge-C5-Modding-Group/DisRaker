@@ -1,6 +1,6 @@
 import unittest
 
-from disraker.bot import DisRakerBot, status_embed
+from disraker.bot import status_embed
 
 
 class StatusEmbedTests(unittest.TestCase):
@@ -16,12 +16,6 @@ class StatusEmbedTests(unittest.TestCase):
         performance = next(
             field.value for field in embed.fields
             if field.name == "Performance")
-        self.assertIn("Part cooling 25%", performance)
+        self.assertIn("Part Cooling 25%", performance)
         self.assertIn("Hotend 100% (5100 RPM)", performance)
         self.assertIn("Electronics 60%", performance)
-
-    def test_remote_actions_are_state_gated(self):
-        self.assertTrue(DisRakerBot.relay_action_available(
-            "pause", "printing"))
-        self.assertFalse(DisRakerBot.relay_action_available(
-            "cancel", "complete"))

@@ -76,7 +76,7 @@ goto :loop
 exit /b %ERRORLEVEL%
 
 :check
-"%PYTHON%" -c "import aiohttp, discord; from disraker.config import load_config; c=load_config(); print('DisRaker configuration OK'); print('Moonraker:', c.moonraker.url); print('Status channel:', c.discord.status_channel_id)"
+"%PYTHON%" -c "import aiohttp, discord; from disraker.config import load_config; c=load_config(); print('DisRaker configuration OK'); print('Printers:', ', '.join(c.printers)); [print(' -', key, value.moonraker.url) for key, value in c.printers.items()]; print('Default status channel:', c.discord.status_channel_id)"
 exit /b %ERRORLEVEL%
 
 :help

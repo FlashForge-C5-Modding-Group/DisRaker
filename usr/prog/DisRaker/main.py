@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 from disraker.bot import DisRakerBot, register_commands
@@ -16,12 +17,15 @@ async def main():
     )
     config_path = os.environ.get("DISRAKER_CONFIG")
     config = load_config(Path(config_path) if config_path else None)
-    async with MoonrakerClient(config.moonraker) as moonraker:
-        bot = DisRakerBot(config, moonraker)
+    async with AsyncExitStack() as stack:
+        moonrakers = {}
+        for printer_id, printer in config.printers.items():
+            moonrakers[printer_id] = await stack.enter_async_context(
+                MoonrakerClient(printer.moonraker))
+        bot = DisRakerBot(config, moonrakers)
         register_commands(bot)
         await bot.start(config.discord.token)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-

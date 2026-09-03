@@ -8,9 +8,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from .config import AppConfig
+from .config import AppConfig, PrinterConfig
 from .moonraker import MoonrakerClient, MoonrakerError
-from .relay import RelayPublisher, RelayServer, RelayStatus
 from .state import PrintObservation, PrintStateStore
 
 
@@ -38,8 +37,10 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
     filename = stats.get("filename") or "No active file"
     virtual_sd = status.get("virtual_sdcard", {})
     display_status = status.get("display_status", {})
-    progress = 100.0 * _number(
-        display_status.get("progress", virtual_sd.get("progress")))
+    progress_value = display_status.get("progress")
+    if progress_value is None:
+        progress_value = virtual_sd.get("progress")
+    progress = 100.0 * _number(progress_value)
     color = {
         "printing": discord.Color.green(),
         "paused": discord.Color.gold(),
@@ -56,7 +57,7 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
     embed.add_field(name="Print time", value=_duration(
         _number(stats.get("print_duration"))), inline=True)
     total_duration = _number(stats.get("total_duration"))
-    if progress > 0.0 and progress < 100.0:
+    if 0.0 < progress < 100.0:
         estimate = total_duration / (progress / 100.0)
         remaining = max(0.0, estimate - total_duration)
         embed.add_field(name="Estimated remaining",
@@ -99,26 +100,22 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
         "fan_generic ", "heater_fan ", "controller_fan ",
         "temperature_fan ",
     )
-    fans = []
     for name, values in status.items():
         if name != "fan" and not name.startswith(fan_prefixes):
             continue
         if not isinstance(values, dict) or "speed" not in values:
             continue
-        if name == "fan":
-            label = "Part cooling"
-        else:
-            label = name.split(" ", 1)[1].replace("_", " ").title()
+        label = "Part cooling" if name == "fan" else name.split(" ", 1)[1]
+        label = label.replace("_", " ").title()
         fan_status = "{} {:.0f}%".format(
             label, 100.0 * _number(values.get("speed")))
         rpm = _number(values.get("rpm"))
         if rpm:
             fan_status += " ({:.0f} RPM)".format(rpm)
-        fans.append(fan_status)
-    if fans:
-        performance.extend(fans)
+        performance.append(fan_status)
     if performance:
-        embed.add_field(name="Performance", value=" • ".join(performance),
+        embed.add_field(name="Performance",
+                        value=" • ".join(performance)[:1024],
                         inline=False)
 
     temperatures = []
@@ -131,9 +128,11 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
             "heater_generic ", "").replace("_", " ").title()
         temperatures.append(
             "{}: **{:.1f}°C** / {:.1f}°C".format(label, current, target))
-    embed.add_field(name="Temperatures",
-                    value=("\n".join(temperatures) or "Unavailable")[:1024],
-                    inline=False)
+    embed.add_field(
+        name="Temperatures",
+        value=("\n".join(temperatures) or "Unavailable")[:1024],
+        inline=False,
+    )
     message = stats.get("message") or display_status.get("message")
     if message:
         embed.add_field(name="Message", value=str(message)[:1024],
@@ -223,114 +222,59 @@ def state_event_content(printer_name: str, status: Dict[str, Any],
         state, "{} changed to **{}**.".format(printer_name, state.title()))
 
 
+class PrinterButton(discord.ui.Button):
+    def __init__(self, bot: "DisRakerBot", printer_id: str, action: str):
+        definitions = {
+            "refresh": ("Refresh", "🔄", discord.ButtonStyle.primary),
+            "camera": ("Camera", "📷", discord.ButtonStyle.secondary),
+            "details": ("Details", "ℹ️", discord.ButtonStyle.secondary),
+            "pause_resume": (
+                "Pause / Resume", "⏯️", discord.ButtonStyle.secondary),
+            "cancel": ("Cancel", "🛑", discord.ButtonStyle.danger),
+        }
+        label, emoji, style = definitions[action]
+        super().__init__(
+            label=label, emoji=emoji, style=style,
+            custom_id="disraker:{}:{}".format(printer_id, action),
+        )
+        self.bot = bot
+        self.printer_id = printer_id
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.bot.handle_button(interaction, self.printer_id, self.action)
+
+
 class PrinterView(discord.ui.View):
-    def __init__(self, bot: "DisRakerBot"):
+    def __init__(self, bot: "DisRakerBot", printer_id: str):
         super().__init__(timeout=None)
         self.bot = bot
-        if bot.config.discord.printer_ui_url:
+        for action in (
+                "refresh", "camera", "details", "pause_resume", "cancel"):
+            self.add_item(PrinterButton(bot, printer_id, action))
+        url = bot.printer_config(printer_id).printer_ui_url
+        if url:
             self.add_item(discord.ui.Button(
                 label="Open printer UI", emoji="🌐",
-                style=discord.ButtonStyle.link,
-                url=bot.config.discord.printer_ui_url))
-
-    @discord.ui.button(
-        label="Refresh status", style=discord.ButtonStyle.primary,
-        emoji="🔄", custom_id="disraker:status",
-    )
-    async def refresh(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
-        del button
-        await interaction.response.defer(thinking=True)
-        try:
-            kwargs = await self.bot.status_edit_payload()
-            await interaction.edit_original_response(**kwargs)
-        except MoonrakerError as exc:
-            await interaction.edit_original_response(
-                embed=error_embed(str(exc)), attachments=[], view=self)
-
-    @discord.ui.button(label="Camera", style=discord.ButtonStyle.secondary,
-                       emoji="📷", custom_id="disraker:camera")
-    async def camera(self, interaction: discord.Interaction,
-                     button: discord.ui.Button):
-        del button
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            image = await self.bot.moonraker.camera_image()
-            await interaction.followup.send(
-                file=discord.File(BytesIO(image.data), image.filename),
-                ephemeral=True)
-        except MoonrakerError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
-
-    @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary,
-                       emoji="ℹ️", custom_id="disraker:details")
-    async def details(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
-        del button
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            status = await self.bot.moonraker.status()
-            info = await self.bot.moonraker.printer_info()
-            embed = details_embed(
-                status, info, await self.bot.printer_name())
-            await interaction.edit_original_response(embed=embed)
-        except MoonrakerError as exc:
-            await interaction.edit_original_response(content=str(exc))
-
-    @discord.ui.button(
-        label="Pause / Resume", style=discord.ButtonStyle.secondary,
-        emoji="⏯️", custom_id="disraker:pause_resume",
-    )
-    async def pause_resume(self, interaction: discord.Interaction,
-                           button: discord.ui.Button):
-        del button
-        if not await self.bot.require_control_access(interaction):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            status = await self.bot.moonraker.status()
-            state = str(status.get("print_stats", {}).get("state", ""))
-            if state == "printing":
-                await self.bot.moonraker.pause_print()
-                result = "Pause requested."
-            elif state == "paused":
-                await self.bot.moonraker.resume_print()
-                result = "Resume requested."
-            else:
-                result = "There is no printing or paused job."
-            await interaction.edit_original_response(content=result)
-        except MoonrakerError as exc:
-            await interaction.edit_original_response(content=str(exc))
-
-    @discord.ui.button(
-        label="Cancel", style=discord.ButtonStyle.danger,
-        emoji="🛑", custom_id="disraker:cancel",
-    )
-    async def cancel(self, interaction: discord.Interaction,
-                     button: discord.ui.Button):
-        del button
-        if not await self.bot.require_control_access(interaction):
-            return
-        await interaction.response.send_message(
-            "Cancel the current print? This cannot be undone.",
-            view=CancelConfirmationView(self.bot), ephemeral=True,
-        )
+                style=discord.ButtonStyle.link, url=url))
 
 
 class CancelConfirmationView(discord.ui.View):
-    def __init__(self, bot: "DisRakerBot"):
+    def __init__(self, bot: "DisRakerBot", printer_id: str):
         super().__init__(timeout=30.0)
         self.bot = bot
+        self.printer_id = printer_id
 
     @discord.ui.button(label="Confirm cancel",
                        style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction,
                       button: discord.ui.Button):
         del button
-        if not await self.bot.require_control_access(interaction):
+        if not await self.bot.require_control_access(
+                interaction, self.printer_id):
             return
         try:
-            await self.bot.moonraker.cancel_print()
+            await self.bot.client(self.printer_id).cancel_print()
             await interaction.response.edit_message(
                 content="Print cancellation requested.", view=None)
         except MoonrakerError as exc:
@@ -339,141 +283,68 @@ class CancelConfirmationView(discord.ui.View):
 
     @discord.ui.button(label="Keep printing",
                        style=discord.ButtonStyle.secondary)
-    async def keep_printing(self, interaction: discord.Interaction,
-                            button: discord.ui.Button):
+    async def dismiss(self, interaction: discord.Interaction,
+                      button: discord.ui.Button):
         del button
         await interaction.response.edit_message(
             content="Cancellation dismissed.", view=None)
 
 
-class RelayActionButton(discord.ui.Button):
-    def __init__(self, bot: "DisRakerBot", relay_id: str, action: str):
-        styles = {
-            "pause": discord.ButtonStyle.secondary,
-            "resume": discord.ButtonStyle.success,
-            "cancel": discord.ButtonStyle.danger,
-        }
-        labels = {"pause": "Pause", "resume": "Resume", "cancel": "Cancel"}
-        super().__init__(
-            label=labels[action], style=styles[action],
-            custom_id="disraker:relay:{}:{}".format(relay_id, action),
-        )
-        self.bot = bot
-        self.relay_id = relay_id
-        self.action = action
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await self.bot.require_relay_control_access(
-                interaction, self.relay_id):
-            return
-        if self.action == "cancel":
-            await interaction.response.send_message(
-                "Cancel this remote printer's current print?",
-                view=RelayCancelConfirmationView(
-                    self.bot, self.relay_id),
-                ephemeral=True,
-            )
-            return
-        if not self.bot.queue_relay_command(self.relay_id, self.action):
-            await interaction.response.send_message(
-                "That action is not valid for the printer's current state.",
-                ephemeral=True,
-            )
-            return
-        await interaction.response.send_message(
-            "{} queued for the printer.".format(self.action.title()),
-            ephemeral=True,
-        )
-
-
-class RemotePrinterView(discord.ui.View):
-    def __init__(self, bot: "DisRakerBot", relay_id: str, state: str):
-        super().__init__(timeout=None)
-        for action in ("pause", "resume", "cancel"):
-            button = RelayActionButton(bot, relay_id, action)
-            button.disabled = not bot.relay_action_available(action, state)
-            self.add_item(button)
-
-
-class RelayCancelConfirmationView(discord.ui.View):
-    def __init__(self, bot: "DisRakerBot", relay_id: str):
-        super().__init__(timeout=30.0)
-        self.bot = bot
-        self.relay_id = relay_id
-
-    @discord.ui.button(label="Confirm remote cancel",
-                       style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
-        del button
-        if not await self.bot.require_relay_control_access(
-                interaction, self.relay_id):
-            return
-        if not self.bot.queue_relay_command(self.relay_id, "cancel"):
-            await interaction.response.edit_message(
-                content="That print is no longer active.", view=None)
-            return
-        await interaction.response.edit_message(
-            content="Cancellation queued for the printer.", view=None)
-
-    @discord.ui.button(label="Keep printing",
-                       style=discord.ButtonStyle.secondary)
-    async def dismiss(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
-        del button
-        await interaction.response.edit_message(
-            content="Remote cancellation dismissed.", view=None)
-
-
 class DisRakerBot(commands.Bot):
-    def __init__(self, config: AppConfig, moonraker: MoonrakerClient):
+    def __init__(self, config: AppConfig,
+                 moonrakers: Dict[str, MoonrakerClient]):
         super().__init__(command_prefix=commands.when_mentioned,
                          intents=discord.Intents.none())
         self.config = config
-        self.moonraker = moonraker
-        state_path = config.notifications.state_file
-        if state_path:
-            path = Path(state_path)
-        else:
-            path = (Path(__file__).resolve().parent.parent
-                    / "data" / "state.json")
-        self._state_store = PrintStateStore(path)
-        self._last_observation = self._state_store.load()
-        configured_name = config.moonraker.printer_name
-        self._printer_name: Optional[str] = configured_name or None
+        self.moonrakers = moonrakers
         self._commands_synced = False
-        self._dashboard_message: Optional[discord.Message] = None
-        self._relay_messages: Dict[str, discord.Message] = {}
-        self._relay_observations: Dict[str, PrintObservation] = {}
-        self._relay_publisher = RelayPublisher(config.relay)
-        self._relay_server = RelayServer(
-            config.relay, self.handle_relay_status)
-        self._state_lock = asyncio.Lock()
-        self._relay_lock = asyncio.Lock()
-        self._publisher_lock = asyncio.Lock()
-        self._realtime_task = None
+        self._names: Dict[str, str] = {}
+        self._messages: Dict[str, discord.Message] = {}
+        self._observations: Dict[str, Optional[PrintObservation]] = {}
+        self._stores: Dict[str, PrintStateStore] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._realtime_tasks = []
+        for printer_id in config.printers:
+            store = PrintStateStore(self._state_path(printer_id))
+            self._stores[printer_id] = store
+            self._observations[printer_id] = store.load()
+            self._locks[printer_id] = asyncio.Lock()
+
+    def _state_path(self, printer_id: str) -> Path:
+        configured = self.config.notifications.state_file
+        if configured and len(self.config.printers) == 1:
+            return Path(configured)
+        if configured:
+            base = Path(configured)
+            return base.with_name(
+                "{}-{}{}".format(base.stem, printer_id, base.suffix))
+        root = Path(__file__).resolve().parent.parent / "data"
+        return root / "{}.json".format(printer_id)
+
+    def printer_config(self, printer_id: str) -> PrinterConfig:
+        return self.config.printers[printer_id]
+
+    def client(self, printer_id: str) -> MoonrakerClient:
+        return self.moonrakers[printer_id]
+
+    def default_printer_id(self) -> str:
+        return next(iter(self.config.printers))
 
     async def setup_hook(self):
-        self.add_view(PrinterView(self))
-        await self._relay_publisher.start()
-        await self._relay_server.start()
-        self.relay_poll.change_interval(
-            seconds=self.config.relay.poll_seconds)
-        if self.config.relay.publish_url:
-            self.relay_poll.start()
+        for printer_id in self.config.printers:
+            self.add_view(PrinterView(self, printer_id))
         self.notification_poll.change_interval(
             seconds=self.config.notifications.poll_seconds)
         if self.config.notifications.enabled:
             self.notification_poll.start()
-            self._realtime_task = asyncio.create_task(self.realtime_monitor())
+            for printer_id in self.config.printers:
+                task = asyncio.create_task(
+                    self.realtime_monitor(printer_id))
+                self._realtime_tasks.append(task)
 
     async def close(self):
-        if self._realtime_task is not None:
-            self._realtime_task.cancel()
-        if self.relay_poll.is_running():
-            self.relay_poll.cancel()
-        await self._relay_server.close()
-        await self._relay_publisher.close()
+        for task in self._realtime_tasks:
+            task.cancel()
         await super().close()
 
     async def on_ready(self):
@@ -486,126 +357,153 @@ class DisRakerBot(commands.Bot):
             else:
                 await self.tree.sync()
             self._commands_synced = True
-        LOG.info("Logged in as %s", self.user)
+        LOG.info("Logged in as %s with %d printers",
+                 self.user, len(self.config.printers))
 
-    async def printer_name(self) -> str:
-        if self._printer_name:
-            return self._printer_name
+    async def printer_name(self, printer_id: str) -> str:
+        if printer_id in self._names:
+            return self._names[printer_id]
+        configured = self.printer_config(printer_id).moonraker.printer_name
+        if configured:
+            self._names[printer_id] = configured
+            return configured
         try:
-            info = await self.moonraker.printer_info()
-            self._printer_name = str(info.get("hostname") or "Klipper Printer")
+            info = await self.client(printer_id).printer_info()
+            name = str(info.get("hostname") or printer_id)
+            self._names[printer_id] = name
+            return name
         except MoonrakerError:
-            return "Klipper Printer"
-        return self._printer_name
+            return printer_id
 
-    async def require_control_access(self, interaction: discord.Interaction):
+    def _is_known_printer(self, printer_id: Optional[str]) -> bool:
+        return printer_id is not None and printer_id in self.config.printers
+
+    async def require_control_access(
+            self, interaction: discord.Interaction, printer_id: str):
+        if not self.config.discord.job_controls_enabled:
+            await interaction.response.send_message(
+                "Printer controls are disabled.", ephemeral=True)
+            return False
         discord_config = self.config.discord
-        if not discord_config.job_controls_enabled:
-            await interaction.response.send_message(
-                "Printer controls are disabled in DisRaker configuration.",
-                ephemeral=True,
-            )
-            return False
-
-        allowed_users = set(discord_config.control_user_ids)
-        allowed_roles = set(discord_config.control_role_ids)
-        if not allowed_users and not allowed_roles:
-            return True
-        if interaction.user.id in allowed_users:
-            return True
-        roles = getattr(interaction.user, "roles", [])
-        if any(getattr(role, "id", 0) in allowed_roles for role in roles):
-            return True
-        permissions = getattr(interaction.user, "guild_permissions", None)
-        if permissions and permissions.manage_guild:
-            return True
-        await interaction.response.send_message(
-            "You do not have permission to control this printer.",
-            ephemeral=True,
-        )
-        return False
-
-    async def require_relay_control_access(
-            self, interaction: discord.Interaction, relay_id: str):
-        source = self.config.relay.sources.get(relay_id)
-        if source is None or not source.allow_controls:
-            await interaction.response.send_message(
-                "Controls are disabled for this printer.", ephemeral=True)
-            return False
+        printer = self.printer_config(printer_id)
         user_id = interaction.user.id
-        roles = getattr(interaction.user, "roles", [])
-        role_ids = {getattr(role, "id", 0) for role in roles}
-        admin_users = set(self.config.relay.admin_user_ids)
-        admin_roles = set(self.config.relay.admin_role_ids)
+        role_ids = {
+            getattr(role, "id", 0)
+            for role in getattr(interaction.user, "roles", [])
+        }
+        global_users = set(discord_config.control_user_ids)
+        global_roles = set(discord_config.control_role_ids)
+        printer_users = set(printer.control_user_ids)
+        printer_roles = set(printer.control_role_ids)
         permissions = getattr(interaction.user, "guild_permissions", None)
         central_admin = (
-            user_id in admin_users
-            or bool(role_ids & admin_roles)
+            user_id in global_users
+            or bool(role_ids & global_roles)
             or bool(permissions and permissions.manage_guild)
         )
         allowed = (
-            user_id in set(source.control_user_ids)
-            or bool(role_ids & set(source.control_role_ids))
-        )
-        if central_admin or allowed:
+            user_id in printer_users or bool(role_ids & printer_roles))
+        no_allowlists = not (
+            global_users or global_roles or printer_users or printer_roles)
+        if central_admin or allowed or no_allowlists:
             return True
         await interaction.response.send_message(
             "You cannot control this printer.", ephemeral=True)
         return False
 
-    @staticmethod
-    def relay_action_available(action: str, state: str) -> bool:
-        return (
-            (action == "pause" and state == "printing")
-            or (action == "resume" and state == "paused")
-            or (action == "cancel" and state in ("printing", "paused"))
-        )
-
-    def queue_relay_command(self, relay_id: str, action: str) -> bool:
-        observation = self._relay_observations.get(relay_id)
-        if observation is None:
-            return False
-        if not self.relay_action_available(action, observation.state):
-            return False
-        self._relay_server.enqueue_command(relay_id, action)
-        return True
-
-    async def send_status(self, interaction: discord.Interaction,
-                          ephemeral: bool):
-        await interaction.response.defer(ephemeral=ephemeral, thinking=True)
+    async def handle_button(self, interaction: discord.Interaction,
+                            printer_id: str, action: str):
+        if not self._is_known_printer(printer_id):
+            await interaction.response.send_message(
+                "That printer is no longer configured.", ephemeral=True)
+            return
+        client = self.client(printer_id)
+        if action == "camera":
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                image = await client.camera_image()
+                await interaction.followup.send(
+                    file=discord.File(BytesIO(image.data), image.filename),
+                    ephemeral=True)
+            except MoonrakerError as exc:
+                await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        if action == "details":
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                status = await client.status()
+                info = await client.printer_info()
+                embed = details_embed(
+                    status, info, await self.printer_name(printer_id))
+                await interaction.edit_original_response(embed=embed)
+            except MoonrakerError as exc:
+                await interaction.edit_original_response(content=str(exc))
+            return
+        if action == "refresh":
+            await interaction.response.defer(thinking=True)
+            try:
+                status = await client.status()
+                kwargs = await self.status_edit_payload(printer_id, status)
+                await interaction.edit_original_response(**kwargs)
+            except MoonrakerError as exc:
+                await interaction.edit_original_response(
+                    embed=error_embed(
+                        str(exc), await self.printer_name(printer_id)),
+                    attachments=[], view=PrinterView(self, printer_id))
+            return
+        if not await self.require_control_access(interaction, printer_id):
+            return
+        if action == "cancel":
+            await interaction.response.send_message(
+                "Cancel the current print? This cannot be undone.",
+                view=CancelConfirmationView(self, printer_id),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            status = await self.moonraker.status()
-            embed, image = await self.status_content(status)
-            kwargs = {"embed": embed, "view": PrinterView(self),
-                      "ephemeral": ephemeral}
-            if image is not None:
-                kwargs["file"] = image
-            await interaction.followup.send(**kwargs)
+            status = await client.status()
+            state = str(status.get("print_stats", {}).get("state", ""))
+            if state == "printing":
+                await client.pause_print()
+                result = "Pause requested."
+            elif state == "paused":
+                await client.resume_print()
+                result = "Resume requested."
+            else:
+                result = "There is no printing or paused job."
+            await interaction.edit_original_response(content=result)
         except MoonrakerError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await interaction.edit_original_response(content=str(exc))
 
-    async def status_content(self, status: Dict[str, Any]):
-        embed = status_embed(status, await self.printer_name())
+    async def status_content(self, printer_id: str, status: Dict[str, Any]):
+        embed = status_embed(status, await self.printer_name(printer_id))
         image = None
         if self.config.notifications.show_camera_in_status:
             try:
-                camera = await self.moonraker.camera_image()
+                camera = await self.client(printer_id).camera_image()
                 image = discord.File(BytesIO(camera.data), camera.filename)
                 embed.set_image(url="attachment://{}".format(camera.filename))
             except MoonrakerError:
-                LOG.warning("Camera unavailable for status", exc_info=True)
+                LOG.warning("Camera unavailable for %s", printer_id,
+                            exc_info=True)
         return embed, image
 
-    async def status_edit_payload(
-            self, status: Optional[Dict[str, Any]] = None):
-        status = status or await self.moonraker.status()
-        embed, image = await self.status_content(status)
+    async def status_edit_payload(self, printer_id: str,
+                                  status: Dict[str, Any]):
+        embed, image = await self.status_content(printer_id, status)
         attachments = [image] if image is not None else []
-        return {"embed": embed, "attachments": attachments,
-                "view": PrinterView(self)}
+        return {
+            "embed": embed,
+            "attachments": attachments,
+            "view": PrinterView(self, printer_id),
+        }
 
-    async def status_channel(self, channel_id: int = 0):
-        channel_id = channel_id or self.config.discord.status_channel_id
+    async def status_channel(self, printer_id: str):
+        printer = self.printer_config(printer_id)
+        channel_id = (
+            printer.status_channel_id
+            or self.config.discord.status_channel_id)
         if not channel_id:
             return None
         channel = self.get_channel(channel_id)
@@ -617,151 +515,94 @@ class DisRakerBot(commands.Bot):
                 return None
         return channel
 
-    async def publish_relay_status(self, status: Dict[str, Any]):
-        if not self.config.relay.publish_url:
-            return
-        camera_data = None
-        camera_filename = "printer.jpg"
-        if self.config.relay.include_camera:
-            try:
-                camera = await self.moonraker.camera_image()
-                camera_data = camera.data
-                camera_filename = camera.filename
-            except MoonrakerError:
-                LOG.warning("Camera unavailable for relay", exc_info=True)
-        async with self._publisher_lock:
-            commands = await self._relay_publisher.publish(
-                await self.printer_name(), status,
-                camera_data=camera_data,
-                camera_filename=camera_filename,
-            )
-            try:
-                await self.apply_relay_commands(commands)
-            except MoonrakerError:
-                LOG.exception("Unable to apply a remote printer command")
-
-    async def apply_relay_commands(self, commands):
-        if not commands:
-            return
-        if not self.config.relay.accept_remote_controls:
-            LOG.warning("Ignoring remote commands; controls are disabled")
-            return
-        status = await self.moonraker.status()
-        state = str(status.get("print_stats", {}).get("state", ""))
-        for action in commands:
-            if action == "pause" and state == "printing":
-                await self.moonraker.pause_print()
-                state = "paused"
-            elif action == "resume" and state == "paused":
-                await self.moonraker.resume_print()
-                state = "printing"
-            elif action == "cancel" and state in ("printing", "paused"):
-                await self.moonraker.cancel_print()
-                state = "cancelled"
-            else:
-                LOG.warning("Ignoring relay command %s in state %s",
-                            action, state)
-
-    async def handle_relay_status(self, relay: RelayStatus, source):
-        async with self._relay_lock:
-            await self._process_relay_status(relay, source)
-
-    async def _process_relay_status(self, relay: RelayStatus, source):
-        printer_name = source.display_name or relay.printer_name
-        observation = PrintObservation.from_status(relay.status)
-        previous = self._relay_observations.get(relay.relay_id)
-        changed = observation.is_new_transition(previous)
-        self._relay_observations[relay.relay_id] = observation
-        channel = await self.status_channel(source.channel_id)
-        if channel is None:
-            return
-        message = self._relay_messages.get(relay.relay_id)
-        if not changed and observation.state != "printing":
-            return
-        embed = status_embed(relay.status, printer_name)
-        kwargs: Dict[str, Any] = {"embed": embed}
-        if source.allow_controls:
-            kwargs["view"] = RemotePrinterView(
-                self, relay.relay_id, observation.state)
-        if relay.camera_data is not None:
-            image = discord.File(
-                BytesIO(relay.camera_data), relay.camera_filename)
-            kwargs["attachments"] = [image]
-            embed.set_image(url="attachment://{}".format(
-                relay.camera_filename))
-        if changed or message is None:
-            if changed and message is not None:
-                try:
-                    await message.edit(view=None)
-                except discord.NotFound:
-                    pass
-            kwargs.pop("attachments", None)
-            if relay.camera_data is not None:
-                kwargs["file"] = discord.File(
-                    BytesIO(relay.camera_data), relay.camera_filename)
-            kwargs["content"] = state_event_content(
-                printer_name, relay.status, observation.state, previous)
-            self._relay_messages[relay.relay_id] = await channel.send(**kwargs)
-            return
+    async def send_status(self, interaction: discord.Interaction,
+                          printer_id: str, ephemeral: bool):
+        await interaction.response.defer(ephemeral=ephemeral, thinking=True)
         try:
-            await message.edit(**kwargs)
-        except discord.NotFound:
-            kwargs.pop("attachments", None)
-            if relay.camera_data is not None:
-                kwargs["file"] = discord.File(
-                    BytesIO(relay.camera_data), relay.camera_filename)
-            self._relay_messages[relay.relay_id] = await channel.send(**kwargs)
+            status = await self.client(printer_id).status()
+            embed, image = await self.status_content(printer_id, status)
+            kwargs = {
+                "embed": embed,
+                "view": PrinterView(self, printer_id),
+                "ephemeral": ephemeral,
+            }
+            if image is not None:
+                kwargs["file"] = image
+            await interaction.followup.send(**kwargs)
+        except MoonrakerError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
 
-    async def update_dashboard(self, channel, status: Dict[str, Any],
-                               force_new: bool = False):
-        embed, image = await self.status_content(status)
-        view = PrinterView(self)
+    async def update_dashboard(self, printer_id: str, channel,
+                               status: Dict[str, Any], force_new: bool):
+        embed, image = await self.status_content(printer_id, status)
+        view = PrinterView(self, printer_id)
         kwargs = {"embed": embed, "view": view}
         if image is not None:
             kwargs["file"] = image
-        if force_new or self._dashboard_message is None:
-            self._dashboard_message = await channel.send(**kwargs)
+        message = self._messages.get(printer_id)
+        if force_new or message is None:
+            self._messages[printer_id] = await channel.send(**kwargs)
             return
         attachments = [image] if image is not None else []
         try:
-            await self._dashboard_message.edit(
+            await message.edit(
                 embed=embed, attachments=attachments, view=view)
         except discord.NotFound:
-            self._dashboard_message = await channel.send(**kwargs)
+            self._messages[printer_id] = await channel.send(**kwargs)
 
-    async def send_state_event(self, channel, status: Dict[str, Any],
-                               state: str,
-                               previous: Optional[PrintObservation] = None):
-        printer_name = await self.printer_name()
+    def mention_text(
+            self, printer_id: str, state: str,
+            previous: Optional[PrintObservation]) -> str:
+        printer = self.printer_config(printer_id)
+        mention_state = state
+        if (state == "printing" and previous is not None
+                and previous.state == "paused"):
+            mention_state = "resumed"
+        if mention_state not in printer.mention_states:
+            return ""
+        mentions = ["<@{}>".format(user_id)
+                    for user_id in printer.mention_user_ids]
+        mentions.extend("<@&{}>".format(role_id)
+                        for role_id in printer.mention_role_ids)
+        return " ".join(mentions)
+
+    async def send_state_event(
+            self, printer_id: str, channel, status: Dict[str, Any],
+            state: str, previous: Optional[PrintObservation]):
+        printer_name = await self.printer_name(printer_id)
         content = state_event_content(
             printer_name, status, state, previous)
+        mentions = self.mention_text(printer_id, state, previous)
+        if mentions:
+            content = "{}\n{}".format(mentions, content)
         embed = status_embed(status, printer_name)
         kwargs = {
             "content": content,
             "embed": embed,
-            "view": PrinterView(self),
+            "view": PrinterView(self, printer_id),
+            "allowed_mentions": discord.AllowedMentions(
+                everyone=False, users=True, roles=True, replied_user=False),
         }
         if self.config.notifications.include_camera_in_events:
             try:
-                image = await self.moonraker.camera_image()
+                image = await self.client(printer_id).camera_image()
                 kwargs["file"] = discord.File(
                     BytesIO(image.data), image.filename)
                 embed.set_image(url="attachment://{}".format(image.filename))
             except MoonrakerError:
-                LOG.warning("Camera unavailable for event", exc_info=True)
+                LOG.warning("Camera unavailable for %s event", printer_id,
+                            exc_info=True)
         return await channel.send(**kwargs)
 
-    async def process_status(self, status: Dict[str, Any],
-                             update_dashboard: bool):
-        async with self._state_lock:
+    async def process_status(self, printer_id: str,
+                             status: Dict[str, Any]):
+        async with self._locks[printer_id]:
             observation = PrintObservation.from_status(status)
-            previous = self._last_observation
+            previous = self._observations[printer_id]
             changed = observation.is_new_transition(previous)
-            self._last_observation = observation
-            self._state_store.save(observation)
-            if changed and self.config.relay.publish_url:
-                await self.publish_relay_status(status)
-            channel = await self.status_channel()
+            self._observations[printer_id] = observation
+            self._stores[printer_id].save(observation)
+            channel = await self.status_channel(printer_id)
             if channel is None:
                 return
             state = observation.state
@@ -772,71 +613,119 @@ class DisRakerBot(commands.Bot):
             )
             if notify:
                 message = await self.send_state_event(
-                    channel, status, state, previous)
-                self._dashboard_message = message
+                    printer_id, channel, status, state, previous)
+                self._messages[printer_id] = message
                 return
-            if update_dashboard and (changed or state == "printing"):
+            if changed or state == "printing":
                 await self.update_dashboard(
-                    channel, status, force_new=changed)
+                    printer_id, channel, status, force_new=changed)
 
-    async def realtime_monitor(self):
+    async def realtime_monitor(self, printer_id: str):
         await self.wait_until_ready()
+        client = self.client(printer_id)
         while not self.is_closed():
             try:
-                async for update in self.moonraker.status_updates():
+                async for update in client.status_updates():
                     print_stats = update.get("print_stats")
-                    if not isinstance(print_stats, dict) or \
-                            "state" not in print_stats:
+                    if not isinstance(print_stats, dict):
+                        continue
+                    if "state" not in print_stats:
                         continue
                     state = str(print_stats["state"])
-                    if (self._last_observation is not None and
-                            state == self._last_observation.state):
+                    previous = self._observations[printer_id]
+                    if previous is not None and state == previous.state:
                         continue
-                    status = await self.moonraker.status()
-                    await self.process_status(status, update_dashboard=True)
+                    status = await client.status()
+                    await self.process_status(printer_id, status)
             except MoonrakerError:
-                LOG.warning("Moonraker real-time feed unavailable; retrying",
+                LOG.warning("Real-time feed unavailable for %s", printer_id,
+                            exc_info=True)
+            except discord.DiscordException:
+                LOG.warning("Discord update failed for %s", printer_id,
                             exc_info=True)
             except asyncio.CancelledError:
                 return
             await asyncio.sleep(5.0)
 
+    async def _poll_printer(self, printer_id: str):
+        try:
+            status = await self.client(printer_id).status()
+            await self.process_status(printer_id, status)
+        except (MoonrakerError, discord.DiscordException):
+            LOG.exception("Moonraker poll failed for %s", printer_id)
+
     @tasks.loop(seconds=10.0)
     async def notification_poll(self):
-        try:
-            status = await self.moonraker.status()
-        except MoonrakerError:
-            LOG.exception("Moonraker notification poll failed")
-            return
-        await self.process_status(status, update_dashboard=True)
+        await asyncio.gather(*(
+            self._poll_printer(printer_id)
+            for printer_id in self.config.printers
+        ))
 
     @notification_poll.before_loop
     async def before_notification_poll(self):
         await self.wait_until_ready()
 
-    @tasks.loop(seconds=5.0)
-    async def relay_poll(self):
-        try:
-            status = await self.moonraker.status()
-            await self.publish_relay_status(status)
-        except MoonrakerError:
-            LOG.exception("Moonraker relay poll failed")
-
-    @relay_poll.before_loop
-    async def before_relay_poll(self):
-        await self.wait_until_ready()
-
 
 def register_commands(bot: DisRakerBot):
+    async def resolve(interaction: discord.Interaction,
+                      printer_id: Optional[str]):
+        selected = printer_id or bot.default_printer_id()
+        if selected not in bot.config.printers:
+            await interaction.response.send_message(
+                "Unknown printer ID. Use `/printers` to list printers.",
+                ephemeral=True,
+            )
+            return None
+        return selected
+
+    async def autocomplete_printer(
+            interaction: discord.Interaction, current: str):
+        del interaction
+        current = current.lower()
+        choices = []
+        for printer_id, printer in bot.config.printers.items():
+            name = printer.moonraker.printer_name or printer_id
+            if current in printer_id.lower() or current in name.lower():
+                choices.append(app_commands.Choice(
+                    name="{} ({})".format(name, printer_id)[:100],
+                    value=printer_id))
+        return choices[:25]
+
     @bot.tree.command(name="printer",
-                      description="Show current printer status and controls")
-    async def printer(interaction: discord.Interaction):
-        await bot.send_status(
-            interaction,
-            ephemeral=not bot.config.discord.public_status_responses)
+                      description="Show one printer's status and controls")
+    @app_commands.describe(printer_id="Configured printer ID")
+    async def printer(interaction: discord.Interaction,
+                      printer_id: Optional[str] = None):
+        selected = await resolve(interaction, printer_id)
+        if selected is not None:
+            await bot.send_status(
+                interaction, selected,
+                ephemeral=not bot.config.discord.public_status_responses)
+
+    printer.autocomplete("printer_id")(autocomplete_printer)
 
     @bot.tree.command(name="dashboard",
-                      description="Publish a shared printer dashboard")
+                      description="Publish one printer's shared status card")
+    @app_commands.describe(printer_id="Configured printer ID")
     @app_commands.default_permissions(manage_messages=True)
-    async def dashboard(interaction: discord.Interaction):
-        await bot.send_status(interaction, ephemeral=False)
+    async def dashboard(interaction: discord.Interaction,
+                        printer_id: Optional[str] = None):
+        selected = await resolve(interaction, printer_id)
+        if selected is not None:
+            await bot.send_status(interaction, selected, ephemeral=False)
+
+    dashboard.autocomplete("printer_id")(autocomplete_printer)
+
+    @bot.tree.command(name="printers",
+                      description="List configured Moonraker printers")
+    async def printers(interaction: discord.Interaction):
+        lines = []
+        for printer_id, printer_config in bot.config.printers.items():
+            name = printer_config.moonraker.printer_name or printer_id
+            lines.append("• **{}** — `{}`".format(name, printer_id))
+        embed = discord.Embed(
+            title="Configured printers",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
