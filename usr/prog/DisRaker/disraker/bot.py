@@ -16,6 +16,23 @@ from .state import PrintObservation, PrintStateStore
 LOG = logging.getLogger("disraker")
 
 
+def user_can_control(config: AppConfig, printer: PrinterConfig,
+                     user: Any) -> bool:
+    user_id = getattr(user, "id", 0)
+    role_ids = {
+        getattr(role, "id", 0)
+        for role in getattr(user, "roles", [])
+    }
+    permissions = getattr(user, "guild_permissions", None)
+    return bool(
+        user_id in config.discord.control_user_ids
+        or role_ids.intersection(config.discord.control_role_ids)
+        or user_id in printer.control_user_ids
+        or role_ids.intersection(printer.control_role_ids)
+        or (permissions and permissions.manage_guild)
+    )
+
+
 def _number(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -592,28 +609,8 @@ class DisRakerBot(commands.Bot):
             await interaction.response.send_message(
                 "Printer controls are disabled.", ephemeral=True)
             return False
-        discord_config = self.config.discord
         printer = self.printer_config(printer_id)
-        user_id = interaction.user.id
-        role_ids = {
-            getattr(role, "id", 0)
-            for role in getattr(interaction.user, "roles", [])
-        }
-        global_users = set(discord_config.control_user_ids)
-        global_roles = set(discord_config.control_role_ids)
-        printer_users = set(printer.control_user_ids)
-        printer_roles = set(printer.control_role_ids)
-        permissions = getattr(interaction.user, "guild_permissions", None)
-        central_admin = (
-            user_id in global_users
-            or bool(role_ids & global_roles)
-            or bool(permissions and permissions.manage_guild)
-        )
-        allowed = (
-            user_id in printer_users or bool(role_ids & printer_roles))
-        no_allowlists = not (
-            global_users or global_roles or printer_users or printer_roles)
-        if central_admin or allowed or no_allowlists:
+        if user_can_control(self.config, printer, interaction.user):
             return True
         await interaction.response.send_message(
             "You cannot control this printer.", ephemeral=True)
@@ -648,6 +645,9 @@ class DisRakerBot(commands.Bot):
                 await interaction.edit_original_response(content=str(exc))
             return
         if action == "jobs":
+            if not await self.require_control_access(
+                    interaction, printer_id):
+                return
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 status, metadata, queue = await self.current_job_data(
@@ -985,6 +985,8 @@ def register_commands(bot: DisRakerBot):
         selected = await resolve(interaction, printer_id)
         if selected is None:
             return
+        if not await bot.require_control_access(interaction, selected):
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             status, metadata, queue_data = await bot.current_job_data(
@@ -1006,6 +1008,8 @@ def register_commands(bot: DisRakerBot):
         selected = await resolve(interaction, printer_id)
         if selected is None:
             return
+        if not await bot.require_control_access(interaction, selected):
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             data = await bot.client(selected).recent_history()
@@ -1024,6 +1028,8 @@ def register_commands(bot: DisRakerBot):
         selected = await resolve(interaction, printer_id)
         if selected is None:
             return
+        if not await bot.require_control_access(interaction, selected):
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             data = await bot.client(selected).job_queue()
@@ -1041,6 +1047,8 @@ def register_commands(bot: DisRakerBot):
                     printer_id: Optional[str] = None):
         selected = await resolve(interaction, printer_id)
         if selected is None:
+            return
+        if not await bot.require_control_access(interaction, selected):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:

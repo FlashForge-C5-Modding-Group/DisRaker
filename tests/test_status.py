@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 from disraker.bot import (
     current_job_embed,
@@ -6,6 +7,7 @@ from disraker.bot import (
     history_embed,
     queue_embed,
     status_embed,
+    user_can_control,
 )
 
 
@@ -69,3 +71,42 @@ class StatusEmbedTests(unittest.TestCase):
         self.assertIn("cube.gcode", history.description)
         self.assertIn("next.gcode", queue.description)
         self.assertIn("new.gcode", files.description)
+
+
+class PermissionTests(unittest.TestCase):
+    def _config(self, users=None, roles=None):
+        return SimpleNamespace(discord=SimpleNamespace(
+            control_user_ids=users or [],
+            control_role_ids=roles or [],
+        ))
+
+    def _printer(self, users=None, roles=None):
+        return SimpleNamespace(
+            control_user_ids=users or [],
+            control_role_ids=roles or [],
+        )
+
+    def _user(self, user_id, roles=None, manage_guild=False):
+        return SimpleNamespace(
+            id=user_id,
+            roles=[SimpleNamespace(id=role_id) for role_id in roles or []],
+            guild_permissions=SimpleNamespace(
+                manage_guild=manage_guild),
+        )
+
+    def test_empty_allowlists_fail_closed(self):
+        allowed = user_can_control(
+            self._config(), self._printer(), self._user(10))
+        self.assertFalse(allowed)
+
+    def test_global_and_printer_permissions_are_accepted(self):
+        self.assertTrue(user_can_control(
+            self._config(users=[10]), self._printer(), self._user(10)))
+        self.assertTrue(user_can_control(
+            self._config(), self._printer(roles=[20]),
+            self._user(10, roles=[20])))
+
+    def test_manage_server_is_accepted(self):
+        self.assertTrue(user_can_control(
+            self._config(), self._printer(),
+            self._user(10, manage_guild=True)))

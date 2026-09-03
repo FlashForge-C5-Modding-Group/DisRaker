@@ -44,12 +44,14 @@ location.
 
 The status controls support pause, resume, confirmed cancellation, and a
 detailed current-job view through Moonraker. Set
-`discord.job_controls_enabled` to `false` to disable write controls. Add
+`discord.job_controls_enabled` to `false` to disable all protected print
+management. Add
 Discord account IDs to the global `discord.control_user_ids` and/or role IDs
 to `discord.control_role_ids` to create central administrators. Each printer
-may also define its own `control_user_ids` and `control_role_ids`. If every
-applicable list is empty, anyone who can see the card may use its controls.
-Members with Manage Server permission are always central administrators.
+may also define its own `control_user_ids` and `control_role_ids`. Access is
+denied when a user is not present in an applicable allowlist. Empty lists do
+not grant public control. Members with Manage Server permission are always
+central administrators.
 
 ## Multiple Moonraker printers
 
@@ -137,6 +139,10 @@ Print-management commands are available for each configured printer:
 - `/start_print` validates an exact G-code path and asks for confirmation
   before starting it. It uses the same global and per-printer access rules as
   pause, resume, and cancel.
+
+The Current Job button and all five print-management commands require an
+allowed user, an allowed role, or Manage Server permission. Public status,
+camera, refresh, and general printer details remain read-only.
 
 DisRaker intentionally does not expose arbitrary G-code, machine power, or
 host administration commands.
