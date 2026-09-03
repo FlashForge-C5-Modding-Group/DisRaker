@@ -109,6 +109,23 @@ DisRaker registers its global commands for both Guild Install and User
 Install. Commands may run in a server, a DM with the bot, or another private
 channel supported by Discord.
 
+To run without any server channels, configure DM-only mode:
+
+```json
+"discord": {
+  "token": "YOUR_DISCORD_BOT_TOKEN",
+  "dm_only": true,
+  "dm_user_id": 123456789012345678,
+  "control_user_ids": [123456789012345678]
+}
+```
+
+In this mode, DisRaker disables guild command contexts and guild installation,
+ignores status channel IDs, and sends proactive status notifications directly
+to `dm_user_id`. Put that user in `control_user_ids` as shown if they should
+also be allowed to start, pause, resume, or cancel prints. The destination user
+must install the application for their user account and allow DMs from it.
+
 In the Discord Developer Portal, open the application's Installation page,
 enable User Install, and add `applications.commands` to the User Install
 default scopes. Use the resulting Discord-provided installation link to add

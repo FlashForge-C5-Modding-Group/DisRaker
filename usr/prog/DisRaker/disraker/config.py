@@ -31,6 +31,8 @@ class MoonrakerConfig:
 class DiscordConfig:
     token: str
     status_channel_id: int = 0
+    dm_only: bool = False
+    dm_user_id: int = 0
     allowed_guild_id: int = 0
     public_status_responses: bool = False
     printer_ui_url: str = ""
@@ -155,6 +157,8 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         status_channel_id=int(discord_data.get(
             "status_channel_id",
             discord_data.get("notification_channel_id", 0))),
+        dm_only=bool(discord_data.get("dm_only", False)),
+        dm_user_id=int(discord_data.get("dm_user_id", 0)),
         allowed_guild_id=int(discord_data.get("allowed_guild_id", 0)),
         public_status_responses=bool(
             discord_data.get("public_status_responses", False)),
@@ -164,6 +168,9 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         control_user_ids=_id_list(discord_data, "control_user_ids"),
         control_role_ids=_id_list(discord_data, "control_role_ids"),
     )
+    if discord.dm_only and discord.dm_user_id <= 0:
+        raise ValueError(
+            "discord.dm_user_id is required when discord.dm_only is true")
     notifications = NotificationConfig(
         enabled=bool(notification_data.get("enabled", True)),
         poll_seconds=max(2.0, float(

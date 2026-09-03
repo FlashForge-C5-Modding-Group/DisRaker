@@ -2,6 +2,8 @@
   "discord": {
     "token": "PUT_DISCORD_BOT_TOKEN_HERE",
     "status_channel_id": 0,
+    "dm_only": false,
+    "dm_user_id": 0,
     "allowed_guild_id": 0,
     "public_status_responses": false,
     "job_controls_enabled": true,

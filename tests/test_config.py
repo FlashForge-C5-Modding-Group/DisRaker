@@ -66,6 +66,28 @@ class ConfigTests(unittest.TestCase):
                 },
             })
 
+    def test_dm_only_requires_and_loads_destination_user(self):
+        config = self._load({
+            "discord": {
+                "token": "test-token",
+                "dm_only": True,
+                "dm_user_id": 123456789,
+            },
+            "moonraker": {},
+        })
+        self.assertTrue(config.discord.dm_only)
+        self.assertEqual(config.discord.dm_user_id, 123456789)
+
+    def test_dm_only_rejects_missing_destination_user(self):
+        with self.assertRaisesRegex(ValueError, "discord.dm_user_id"):
+            self._load({
+                "discord": {
+                    "token": "test-token",
+                    "dm_only": True,
+                },
+                "moonraker": {},
+            })
+
 
 if __name__ == "__main__":
     unittest.main()

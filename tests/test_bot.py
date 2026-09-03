@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from disraker.bot import DisRakerBot, register_commands
 from disraker.config import (
@@ -35,6 +35,26 @@ class BotCommandContextTests(unittest.TestCase):
             self.assertEqual(payload["contexts"], [0, 1, 2])
             self.assertEqual(payload["integration_types"], [0, 1])
             self.assertTrue(payload["dm_permission"])
+
+    def test_dm_only_commands_exclude_guild_context_and_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = AppConfig(
+                discord=DiscordConfig(
+                    token="test", dm_only=True, dm_user_id=123),
+                notifications=NotificationConfig(
+                    enabled=False,
+                    state_file=str(Path(directory) / "state.json"),
+                ),
+                printers={
+                    "test": PrinterConfig(moonraker=MoonrakerConfig()),
+                },
+            )
+            bot = DisRakerBot(config, {"test": object()})
+            register_commands(bot)
+            command = bot.tree.get_command("printer")
+            payload = command.to_dict(bot.tree)
+            self.assertEqual(payload["contexts"], [1, 2])
+            self.assertEqual(payload["integration_types"], [1])
 
 
 class BotConnectivityTests(unittest.IsolatedAsyncioTestCase):
@@ -75,6 +95,27 @@ class BotConnectivityTests(unittest.IsolatedAsyncioTestCase):
             bot.process_status.assert_awaited_once_with(
                 "test", status, recovered=True)
             self.assertTrue(bot._stores["test"].connectivity())
+
+    async def test_dm_only_status_channel_uses_configured_user(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = AppConfig(
+                discord=DiscordConfig(
+                    token="test", dm_only=True, dm_user_id=456),
+                notifications=NotificationConfig(
+                    enabled=False,
+                    state_file=str(Path(directory) / "state.json"),
+                ),
+                printers={
+                    "test": PrinterConfig(moonraker=MoonrakerConfig()),
+                },
+            )
+            bot = DisRakerBot(config, {"test": object()})
+            channel = object()
+            user = SimpleNamespace(dm_channel=channel)
+            bot.get_user = Mock(return_value=user)
+            self.assertIs(await bot.status_channel("test"), channel)
+            bot.get_user.assert_called_once_with(456)
+            self.assertEqual(bot.mention_text("test", "printing", None), "")
 
     async def test_refresh_edits_the_clicked_message(self):
         with tempfile.TemporaryDirectory() as directory:

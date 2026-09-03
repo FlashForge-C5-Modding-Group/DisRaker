@@ -11,6 +11,10 @@ from discord.ext import commands, tasks
 from .config import AppConfig, PrinterConfig
 from .moonraker import MoonrakerClient, MoonrakerError
 from .state import PrintObservation, PrintStateStore
+from .views import (
+    CancelConfirmationView,
+    PrinterView,
+)
 
 
 LOG = logging.getLogger("disraker")
@@ -366,7 +370,7 @@ def state_event_content(printer_name: str, status: Dict[str, Any],
             printer_name, filename),
         "complete": "✅ **{} completed:** `{}`".format(
             printer_name, filename),
-        "error": "❌ **{} print error:** `{}`".format(
+        "error": "🛑⚠️ **{} print error:** `{}`".format(
             printer_name, filename),
         "cancelled": "🛑 **{} cancelled:** `{}`".format(
             printer_name, filename),
@@ -380,137 +384,17 @@ def state_event_content(printer_name: str, status: Dict[str, Any],
         state, "{} changed to **{}**.".format(printer_name, state.title()))
 
 
-class PrinterButton(discord.ui.Button):
-    def __init__(self, bot: "DisRakerBot", printer_id: str, action: str,
-                 label_override: Optional[str] = None):
-        definitions = {
-            "refresh": ("Refresh", "🔄", discord.ButtonStyle.primary),
-            "camera": ("Camera", "📷", discord.ButtonStyle.secondary),
-            "details": ("Details", "ℹ️", discord.ButtonStyle.secondary),
-            "jobs": ("Current job", "📋", discord.ButtonStyle.secondary),
-            "pause_resume": (
-                "Pause / Resume", "⏯️", discord.ButtonStyle.secondary),
-            "cancel": ("Cancel", "🛑", discord.ButtonStyle.danger),
-        }
-        label, emoji, style = definitions[action]
-        label = label_override or label
-        super().__init__(
-            label=label, emoji=emoji, style=style,
-            custom_id="disraker:{}:{}".format(printer_id, action),
-        )
-        self.bot = bot
-        self.printer_id = printer_id
-        self.action = action
-
-    async def callback(self, interaction: discord.Interaction):
-        await self.bot.handle_button(interaction, self.printer_id, self.action)
-
-
-class PrinterView(discord.ui.View):
-    def __init__(self, bot: "DisRakerBot", printer_id: str,
-                 state: Optional[str] = None):
-        super().__init__(timeout=None)
-        self.bot = bot
-        for action in ("refresh", "camera", "details", "jobs"):
-            self.add_item(PrinterButton(bot, printer_id, action))
-        if state in ("printing", "paused"):
-            label = "Pause" if state == "printing" else "Resume"
-            self.add_item(PrinterButton(
-                bot, printer_id, "pause_resume", label_override=label))
-            self.add_item(PrinterButton(bot, printer_id, "cancel"))
-        url = bot.printer_config(printer_id).printer_ui_url
-        if url:
-            self.add_item(discord.ui.Button(
-                label="Open printer UI", emoji="🌐",
-                style=discord.ButtonStyle.link, url=url))
-
-
-class CancelConfirmationView(discord.ui.View):
-    def __init__(self, bot: "DisRakerBot", printer_id: str):
-        super().__init__(timeout=30.0)
-        self.bot = bot
-        self.printer_id = printer_id
-
-    @discord.ui.button(label="Confirm cancel",
-                       style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
-        del button
-        if not await self.bot.require_control_access(
-                interaction, self.printer_id):
-            return
-        try:
-            status = await self.bot.client(self.printer_id).status()
-            state = str(status.get("print_stats", {}).get("state", ""))
-            if state not in ("printing", "paused"):
-                await interaction.response.edit_message(
-                    content="There is no active print to cancel.", view=None)
-                return
-            await self.bot.client(self.printer_id).cancel_print()
-            await interaction.response.edit_message(
-                content="Print cancellation requested.", view=None)
-        except MoonrakerError as exc:
-            await interaction.response.edit_message(
-                content=str(exc), view=None)
-
-    @discord.ui.button(label="Keep printing",
-                       style=discord.ButtonStyle.secondary)
-    async def dismiss(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
-        del button
-        await interaction.response.edit_message(
-            content="Cancellation dismissed.", view=None)
-
-
-class StartPrintConfirmationView(discord.ui.View):
-    def __init__(self, bot: "DisRakerBot", printer_id: str, filename: str):
-        super().__init__(timeout=45.0)
-        self.bot = bot
-        self.printer_id = printer_id
-        self.filename = filename
-
-    @discord.ui.button(label="Start print",
-                       style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
-        del button
-        if not await self.bot.require_control_access(
-                interaction, self.printer_id):
-            return
-        try:
-            status = await self.bot.client(self.printer_id).status()
-            state = str(status.get("print_stats", {}).get("state", ""))
-            if state in ("printing", "paused"):
-                await interaction.response.edit_message(
-                    content="A print is already {}.".format(state),
-                    view=None)
-                return
-            await self.bot.client(self.printer_id).start_print(self.filename)
-            await interaction.response.edit_message(
-                content="Print start requested for `{}`.".format(
-                    self.filename), view=None)
-        except MoonrakerError as exc:
-            await interaction.response.edit_message(
-                content=str(exc), view=None)
-
-    @discord.ui.button(label="Do not start",
-                       style=discord.ButtonStyle.secondary)
-    async def dismiss(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
-        del button
-        await interaction.response.edit_message(
-            content="Print start dismissed.", view=None)
-
-
 class DisRakerBot(commands.Bot):
     def __init__(self, config: AppConfig,
                  moonrakers: Dict[str, MoonrakerClient]):
         super().__init__(command_prefix=commands.when_mentioned,
                          intents=discord.Intents.none())
         self.tree.allowed_contexts = app_commands.AppCommandContext(
-            guild=True, dm_channel=True, private_channel=True)
+            guild=not config.discord.dm_only,
+            dm_channel=True,
+            private_channel=True)
         self.tree.allowed_installs = app_commands.AppInstallationType(
-            guild=True, user=True)
+            guild=not config.discord.dm_only, user=True)
         self.config = config
         self.moonrakers = moonrakers
         self._commands_synced = False
@@ -589,7 +473,8 @@ class DisRakerBot(commands.Bot):
     async def on_ready(self):
         if not self._commands_synced:
             await self.tree.sync()
-            if self.config.discord.allowed_guild_id:
+            if (self.config.discord.allowed_guild_id
+                    and not self.config.discord.dm_only):
                 guild = discord.Object(
                     id=self.config.discord.allowed_guild_id)
                 self.tree.copy_global_to(guild=guild)
@@ -739,6 +624,14 @@ class DisRakerBot(commands.Bot):
         }
 
     async def status_channel(self, printer_id: str):
+        if self.config.discord.dm_only:
+            user_id = self.config.discord.dm_user_id
+            try:
+                user = self.get_user(user_id) or await self.fetch_user(user_id)
+                return user.dm_channel or await user.create_dm()
+            except discord.DiscordException:
+                LOG.exception("Cannot open DM with user %s", user_id)
+                return None
         printer = self.printer_config(printer_id)
         channel_id = (
             printer.status_channel_id
@@ -828,6 +721,8 @@ class DisRakerBot(commands.Bot):
     def mention_text(
             self, printer_id: str, state: str,
             previous: Optional[PrintObservation]) -> str:
+        if self.config.discord.dm_only:
+            return ""
         printer = self.printer_config(printer_id)
         mention_state = state
         if (state == "printing" and previous is not None
@@ -1000,181 +895,6 @@ class DisRakerBot(commands.Bot):
 
 
 def register_commands(bot: DisRakerBot):
-    async def resolve(interaction: discord.Interaction,
-                      printer_id: Optional[str]):
-        selected = printer_id or bot.default_printer_id()
-        if selected not in bot.config.printers:
-            await interaction.response.send_message(
-                "Unknown printer ID. Use `/printers` to list printers.",
-                ephemeral=True,
-            )
-            return None
-        return selected
-
-    async def autocomplete_printer(
-            interaction: discord.Interaction, current: str):
-        del interaction
-        current = current.lower()
-        choices = []
-        for printer_id, printer in bot.config.printers.items():
-            name = printer.moonraker.printer_name or printer_id
-            if current in printer_id.lower() or current in name.lower():
-                choices.append(app_commands.Choice(
-                    name="{} ({})".format(name, printer_id)[:100],
-                    value=printer_id))
-        return choices[:25]
-
-    @bot.tree.command(name="printer",
-                      description="Show one printer's status and controls")
-    @app_commands.describe(printer_id="Configured printer ID")
-    async def printer(interaction: discord.Interaction,
-                      printer_id: Optional[str] = None):
-        selected = await resolve(interaction, printer_id)
-        if selected is not None:
-            await bot.send_status(
-                interaction, selected,
-                ephemeral=not bot.config.discord.public_status_responses)
-
-    printer.autocomplete("printer_id")(autocomplete_printer)
-
-    @bot.tree.command(name="dashboard",
-                      description="Publish one printer's shared status card")
-    @app_commands.describe(printer_id="Configured printer ID")
-    @app_commands.default_permissions(manage_messages=True)
-    async def dashboard(interaction: discord.Interaction,
-                        printer_id: Optional[str] = None):
-        selected = await resolve(interaction, printer_id)
-        if selected is not None:
-            await bot.send_status(interaction, selected, ephemeral=False)
-
-    dashboard.autocomplete("printer_id")(autocomplete_printer)
-
-    @bot.tree.command(name="job",
-                      description="Show the active print and queue summary")
-    @app_commands.describe(printer_id="Configured printer ID")
-    async def job(interaction: discord.Interaction,
-                  printer_id: Optional[str] = None):
-        selected = await resolve(interaction, printer_id)
-        if selected is None:
-            return
-        if not await bot.require_control_access(interaction, selected):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            status, metadata, queue_data = await bot.current_job_data(
-                selected)
-            embed = current_job_embed(
-                status, metadata, queue_data,
-                await bot.printer_name(selected))
-            await interaction.edit_original_response(embed=embed)
-        except MoonrakerError as exc:
-            await interaction.edit_original_response(content=str(exc))
-
-    job.autocomplete("printer_id")(autocomplete_printer)
-
-    @bot.tree.command(name="history",
-                      description="Show recent completed and stopped prints")
-    @app_commands.describe(printer_id="Configured printer ID")
-    async def history(interaction: discord.Interaction,
-                      printer_id: Optional[str] = None):
-        selected = await resolve(interaction, printer_id)
-        if selected is None:
-            return
-        if not await bot.require_control_access(interaction, selected):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            data = await bot.client(selected).recent_history()
-            embed = history_embed(data, await bot.printer_name(selected))
-            await interaction.edit_original_response(embed=embed)
-        except MoonrakerError as exc:
-            await interaction.edit_original_response(content=str(exc))
-
-    history.autocomplete("printer_id")(autocomplete_printer)
-
-    @bot.tree.command(name="queue",
-                      description="Show prints waiting in Moonraker's queue")
-    @app_commands.describe(printer_id="Configured printer ID")
-    async def queue(interaction: discord.Interaction,
-                    printer_id: Optional[str] = None):
-        selected = await resolve(interaction, printer_id)
-        if selected is None:
-            return
-        if not await bot.require_control_access(interaction, selected):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            data = await bot.client(selected).job_queue()
-            embed = queue_embed(data, await bot.printer_name(selected))
-            await interaction.edit_original_response(embed=embed)
-        except MoonrakerError as exc:
-            await interaction.edit_original_response(content=str(exc))
-
-    queue.autocomplete("printer_id")(autocomplete_printer)
-
-    @bot.tree.command(name="files",
-                      description="Show recently added printable files")
-    @app_commands.describe(printer_id="Configured printer ID")
-    async def files(interaction: discord.Interaction,
-                    printer_id: Optional[str] = None):
-        selected = await resolve(interaction, printer_id)
-        if selected is None:
-            return
-        if not await bot.require_control_access(interaction, selected):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            data = await bot.client(selected).gcode_files()
-            embed = files_embed(data, await bot.printer_name(selected))
-            await interaction.edit_original_response(embed=embed)
-        except MoonrakerError as exc:
-            await interaction.edit_original_response(content=str(exc))
-
-    files.autocomplete("printer_id")(autocomplete_printer)
-
-    @bot.tree.command(name="start_print",
-                      description="Start a G-code file after confirmation")
-    @app_commands.describe(
-        filename="Exact path shown by /files",
-        printer_id="Configured printer ID",
-    )
-    async def start_print(interaction: discord.Interaction, filename: str,
-                          printer_id: Optional[str] = None):
-        selected = await resolve(interaction, printer_id)
-        if selected is None:
-            return
-        if not await bot.require_control_access(interaction, selected):
-            return
-        filename = filename.strip()
-        if not filename:
-            await interaction.response.send_message(
-                "A G-code filename is required.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            metadata = await bot.client(selected).gcode_metadata(filename)
-            expected = str(metadata.get("filename") or filename)
-            view = StartPrintConfirmationView(bot, selected, expected)
-            await interaction.edit_original_response(
-                content="Start `{}` on **{}**?".format(
-                    expected, await bot.printer_name(selected)),
-                view=view,
-            )
-        except MoonrakerError as exc:
-            await interaction.edit_original_response(content=str(exc))
-
-    start_print.autocomplete("printer_id")(autocomplete_printer)
-
-    @bot.tree.command(name="printers",
-                      description="List configured Moonraker printers")
-    async def printers(interaction: discord.Interaction):
-        lines = []
-        for printer_id, printer_config in bot.config.printers.items():
-            name = printer_config.moonraker.printer_name or printer_id
-            lines.append("• **{}** - `{}`".format(name, printer_id))
-        embed = discord.Embed(
-            title="Configured printers",
-            description="\n".join(lines),
-            color=discord.Color.blurple(),
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    # Kept as a compatibility import for existing launchers.
+    from .commands import register_commands as register
+    return register(bot)
