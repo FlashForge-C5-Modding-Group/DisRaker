@@ -76,6 +76,23 @@ class BotConnectivityTests(unittest.IsolatedAsyncioTestCase):
                 "test", status, recovered=True)
             self.assertTrue(bot._stores["test"].connectivity())
 
+    async def test_refresh_edits_the_clicked_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status = {"print_stats": {"state": "printing"}}
+            client = SimpleNamespace(status=AsyncMock(return_value=status))
+            bot = self._bot(directory, client)
+            bot.status_edit_payload = AsyncMock(return_value={
+                "content": "updated",
+            })
+            interaction = SimpleNamespace(
+                response=SimpleNamespace(defer=AsyncMock()),
+                edit_original_response=AsyncMock(),
+            )
+            await bot.handle_button(interaction, "test", "refresh")
+            interaction.response.defer.assert_awaited_once_with()
+            interaction.edit_original_response.assert_awaited_once_with(
+                content="updated")
+
 
 if __name__ == "__main__":
     unittest.main()

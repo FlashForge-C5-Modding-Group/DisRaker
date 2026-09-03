@@ -677,7 +677,7 @@ class DisRakerBot(commands.Bot):
                 await interaction.edit_original_response(content=str(exc))
             return
         if action == "refresh":
-            await interaction.response.defer(thinking=True)
+            await interaction.response.defer()
             try:
                 status = await client.status()
                 kwargs = await self.status_edit_payload(printer_id, status)
