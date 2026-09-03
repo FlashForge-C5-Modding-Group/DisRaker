@@ -381,7 +381,8 @@ def state_event_content(printer_name: str, status: Dict[str, Any],
 
 
 class PrinterButton(discord.ui.Button):
-    def __init__(self, bot: "DisRakerBot", printer_id: str, action: str):
+    def __init__(self, bot: "DisRakerBot", printer_id: str, action: str,
+                 label_override: Optional[str] = None):
         definitions = {
             "refresh": ("Refresh", "🔄", discord.ButtonStyle.primary),
             "camera": ("Camera", "📷", discord.ButtonStyle.secondary),
@@ -392,6 +393,7 @@ class PrinterButton(discord.ui.Button):
             "cancel": ("Cancel", "🛑", discord.ButtonStyle.danger),
         }
         label, emoji, style = definitions[action]
+        label = label_override or label
         super().__init__(
             label=label, emoji=emoji, style=style,
             custom_id="disraker:{}:{}".format(printer_id, action),
@@ -405,13 +407,17 @@ class PrinterButton(discord.ui.Button):
 
 
 class PrinterView(discord.ui.View):
-    def __init__(self, bot: "DisRakerBot", printer_id: str):
+    def __init__(self, bot: "DisRakerBot", printer_id: str,
+                 state: Optional[str] = None):
         super().__init__(timeout=None)
         self.bot = bot
-        for action in (
-                "refresh", "camera", "details", "jobs", "pause_resume",
-                "cancel"):
+        for action in ("refresh", "camera", "details", "jobs"):
             self.add_item(PrinterButton(bot, printer_id, action))
+        if state in ("printing", "paused"):
+            label = "Pause" if state == "printing" else "Resume"
+            self.add_item(PrinterButton(
+                bot, printer_id, "pause_resume", label_override=label))
+            self.add_item(PrinterButton(bot, printer_id, "cancel"))
         url = bot.printer_config(printer_id).printer_ui_url
         if url:
             self.add_item(discord.ui.Button(
@@ -434,6 +440,12 @@ class CancelConfirmationView(discord.ui.View):
                 interaction, self.printer_id):
             return
         try:
+            status = await self.bot.client(self.printer_id).status()
+            state = str(status.get("print_stats", {}).get("state", ""))
+            if state not in ("printing", "paused"):
+                await interaction.response.edit_message(
+                    content="There is no active print to cancel.", view=None)
+                return
             await self.bot.client(self.printer_id).cancel_print()
             await interaction.response.edit_message(
                 content="Print cancellation requested.", view=None)
@@ -553,7 +565,7 @@ class DisRakerBot(commands.Bot):
 
     async def setup_hook(self):
         for printer_id in self.config.printers:
-            self.add_view(PrinterView(self, printer_id))
+            self.add_view(PrinterView(self, printer_id, state="printing"))
         self.notification_poll.change_interval(
             seconds=self.config.notifications.poll_seconds)
         if self.config.notifications.enabled:
@@ -716,7 +728,9 @@ class DisRakerBot(commands.Bot):
         return {
             "embed": embed,
             "attachments": attachments,
-            "view": PrinterView(self, printer_id),
+            "view": PrinterView(
+                self, printer_id,
+                state=str(status.get("print_stats", {}).get("state", ""))),
         }
 
     async def status_channel(self, printer_id: str):
@@ -774,7 +788,10 @@ class DisRakerBot(commands.Bot):
             embed, image = await self.status_content(printer_id, status)
             kwargs = {
                 "embed": embed,
-                "view": PrinterView(self, printer_id),
+                "view": PrinterView(
+                    self, printer_id,
+                    state=str(status.get(
+                        "print_stats", {}).get("state", ""))),
                 "ephemeral": ephemeral,
             }
             if image is not None:
@@ -786,7 +803,9 @@ class DisRakerBot(commands.Bot):
     async def update_dashboard(self, printer_id: str, channel,
                                status: Dict[str, Any], force_new: bool):
         embed, image = await self.status_content(printer_id, status)
-        view = PrinterView(self, printer_id)
+        view = PrinterView(
+            self, printer_id,
+            state=str(status.get("print_stats", {}).get("state", "")))
         kwargs = {"embed": embed, "view": view}
         if image is not None:
             kwargs["file"] = image
@@ -830,7 +849,7 @@ class DisRakerBot(commands.Bot):
         kwargs = {
             "content": content,
             "embed": embed,
-            "view": PrinterView(self, printer_id),
+            "view": PrinterView(self, printer_id, state=state),
             "allowed_mentions": discord.AllowedMentions(
                 everyone=False, users=True, roles=True, replied_user=False),
         }

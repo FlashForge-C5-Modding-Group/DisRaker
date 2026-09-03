@@ -5,6 +5,7 @@ from disraker.bot import (
     current_job_embed,
     files_embed,
     history_embed,
+    PrinterView,
     queue_embed,
     status_embed,
     user_can_control,
@@ -110,3 +111,32 @@ class PermissionTests(unittest.TestCase):
         self.assertTrue(user_can_control(
             self._config(), self._printer(),
             self._user(10, manage_guild=True)))
+
+
+class PrinterViewTests(unittest.TestCase):
+    def _view(self, state):
+        printer = SimpleNamespace(printer_ui_url="")
+        bot = SimpleNamespace(printer_config=lambda printer_id: printer)
+        return PrinterView(bot, "test", state=state)
+
+    def _actions(self, view):
+        return {
+            item.custom_id.rsplit(":", 1)[-1]: item.label
+            for item in view.children if item.custom_id
+        }
+
+    def test_active_print_has_pause_and_cancel(self):
+        actions = self._actions(self._view("printing"))
+        self.assertEqual(actions["pause_resume"], "Pause")
+        self.assertIn("cancel", actions)
+
+    def test_paused_print_has_resume_and_cancel(self):
+        actions = self._actions(self._view("paused"))
+        self.assertEqual(actions["pause_resume"], "Resume")
+        self.assertIn("cancel", actions)
+
+    def test_terminal_states_have_no_job_controls(self):
+        for state in ("standby", "complete", "cancelled", "error", None):
+            actions = self._actions(self._view(state))
+            self.assertNotIn("pause_resume", actions)
+            self.assertNotIn("cancel", actions)

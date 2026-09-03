@@ -144,5 +144,9 @@ The Current Job button and all five print-management commands require an
 allowed user, an allowed role, or Manage Server permission. Public status,
 camera, refresh, and general printer details remain read-only.
 
+Pause and Cancel are only shown while a print is active. A paused job shows
+Resume and Cancel. Idle, completed, cancelled, and failed cards omit those
+controls entirely.
+
 DisRaker intentionally does not expose arbitrary G-code, machine power, or
 host administration commands.
