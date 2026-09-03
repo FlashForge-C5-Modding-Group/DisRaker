@@ -30,6 +30,20 @@ def _duration(seconds: float) -> str:
     return "{:02d}:{:02d}:{:02d}".format(hours, minutes, seconds)
 
 
+def _size(size: Any) -> str:
+    value = max(0.0, _number(size))
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024.0 or unit == "GiB":
+            return "{:.1f} {}".format(value, unit)
+        value /= 1024.0
+    return "0 B"
+
+
+def _discord_time(timestamp: Any) -> str:
+    value = int(_number(timestamp))
+    return "<t:{}:R>".format(value) if value > 0 else "Unknown time"
+
+
 def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
     printer_name = printer_name[:180]
     stats = status.get("print_stats", {})
@@ -49,7 +63,7 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
         "complete": discord.Color.blue(),
     }.get(state, discord.Color.light_grey())
     embed = discord.Embed(
-        title="{} — Printer status".format(printer_name),
+        title="{} - Printer status".format(printer_name),
         description=str(filename)[:4096], color=color)
     embed.add_field(name="State", value=state.title(), inline=True)
     embed.add_field(name="Progress", value="{:.1f}%".format(progress),
@@ -157,7 +171,7 @@ def error_embed(message: str, printer_name: str = "Printer") -> discord.Embed:
 def details_embed(status: Dict[str, Any], info: Dict[str, Any],
                   printer_name: str) -> discord.Embed:
     embed = discord.Embed(
-        title="{} — Details".format(printer_name),
+        title="{} - Details".format(printer_name),
         color=discord.Color.blurple(),
     )
     embed.add_field(name="Klipper state",
@@ -196,6 +210,133 @@ def details_embed(status: Dict[str, Any], info: Dict[str, Any],
     return embed
 
 
+def current_job_embed(status: Dict[str, Any], metadata: Dict[str, Any],
+                      queue: Dict[str, Any],
+                      printer_name: str) -> discord.Embed:
+    stats = status.get("print_stats", {})
+    filename = str(stats.get("filename") or "No active file")
+    state = str(stats.get("state", "unknown")).title()
+    embed = discord.Embed(
+        title="{} - Current job".format(printer_name),
+        description="`{}`".format(filename)[:4096],
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="State", value=state)
+    progress_value = status.get("display_status", {}).get("progress")
+    if progress_value is None:
+        progress_value = status.get("virtual_sdcard", {}).get("progress")
+    embed.add_field(
+        name="Progress",
+        value="{:.1f}%".format(100.0 * _number(progress_value)))
+    embed.add_field(
+        name="Elapsed",
+        value=_duration(_number(stats.get("print_duration"))))
+    layer_info = stats.get("info", {})
+    current_layer = layer_info.get("current_layer")
+    total_layer = layer_info.get("total_layer")
+    if current_layer is not None or total_layer is not None:
+        embed.add_field(
+            name="Layer",
+            value="{} / {}".format(
+                current_layer or "?", total_layer or "?"))
+    estimated = _number(metadata.get("estimated_time"))
+    if estimated:
+        remaining = max(
+            0.0, estimated - _number(stats.get("print_duration")))
+        embed.add_field(name="Slicer estimate", value=_duration(estimated))
+        embed.add_field(name="Estimate remaining", value=_duration(remaining))
+    material = metadata.get("filament_name") or metadata.get("filament_type")
+    if material:
+        embed.add_field(name="Material", value=str(material)[:1024])
+    slicer = metadata.get("slicer")
+    if slicer:
+        slicer_version = metadata.get("slicer_version")
+        value = str(slicer)
+        if slicer_version:
+            value += " {}".format(slicer_version)
+        embed.add_field(name="Slicer", value=value[:1024])
+    dimensions = []
+    for label, key, suffix in (
+            ("Layer", "layer_height", " mm"),
+            ("Height", "object_height", " mm"),
+            ("Nozzle", "nozzle_diameter", " mm")):
+        if metadata.get(key) is not None:
+            dimensions.append("{} {}{}".format(
+                label, metadata[key], suffix))
+    if dimensions:
+        embed.add_field(
+            name="Print geometry", value=" • ".join(dimensions),
+            inline=False)
+    queued = queue.get("queued_jobs", [])
+    embed.add_field(
+        name="Queue",
+        value="{} • {} job(s)".format(
+            str(queue.get("queue_state", "unknown")).title(), len(queued)),
+        inline=False,
+    )
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def history_embed(history: Dict[str, Any],
+                  printer_name: str) -> discord.Embed:
+    lines = []
+    for job in history.get("jobs", [])[:10]:
+        if not isinstance(job, dict):
+            continue
+        filename = str(job.get("filename") or "Unknown file")
+        state = str(job.get("status") or "unknown").title()
+        elapsed = _duration(_number(job.get("print_duration")))
+        when = _discord_time(job.get("end_time") or job.get("start_time"))
+        lines.append("**{}** - {} • {} • {}".format(
+            filename[:120], state, elapsed, when))
+    embed = discord.Embed(
+        title="{} - Recent prints".format(printer_name),
+        description=("\n".join(lines) or "No print history available")[:4096],
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="{} total recorded job(s)".format(
+        history.get("count", len(lines))))
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def queue_embed(queue: Dict[str, Any], printer_name: str) -> discord.Embed:
+    lines = []
+    for index, job in enumerate(queue.get("queued_jobs", [])[:20], 1):
+        if not isinstance(job, dict):
+            continue
+        filename = job.get("filename") or job.get("job_id") or "Unknown file"
+        lines.append("{}. `{}`".format(index, str(filename)[:180]))
+    embed = discord.Embed(
+        title="{} - Print queue".format(printer_name),
+        description=("\n".join(lines) or "The print queue is empty")[:4096],
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name="Queue state",
+        value=str(queue.get("queue_state", "unknown")).title())
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def files_embed(files: list, printer_name: str) -> discord.Embed:
+    lines = []
+    for item in files[:15]:
+        path = str(item.get("path") or "Unknown file")
+        lines.append("`{}` - {} • {}".format(
+            path[:180], _size(item.get("size")),
+            _discord_time(item.get("modified"))))
+    embed = discord.Embed(
+        title="{} - Recent G-code files".format(printer_name),
+        description=("\n".join(lines) or "No G-code files found")[:4096],
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Use /start_print with the exact path to print")
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
 def state_event_content(printer_name: str, status: Dict[str, Any],
                         state: str,
                         previous: Optional[PrintObservation] = None) -> str:
@@ -228,6 +369,7 @@ class PrinterButton(discord.ui.Button):
             "refresh": ("Refresh", "🔄", discord.ButtonStyle.primary),
             "camera": ("Camera", "📷", discord.ButtonStyle.secondary),
             "details": ("Details", "ℹ️", discord.ButtonStyle.secondary),
+            "jobs": ("Current job", "📋", discord.ButtonStyle.secondary),
             "pause_resume": (
                 "Pause / Resume", "⏯️", discord.ButtonStyle.secondary),
             "cancel": ("Cancel", "🛑", discord.ButtonStyle.danger),
@@ -250,7 +392,8 @@ class PrinterView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
         for action in (
-                "refresh", "camera", "details", "pause_resume", "cancel"):
+                "refresh", "camera", "details", "jobs", "pause_resume",
+                "cancel"):
             self.add_item(PrinterButton(bot, printer_id, action))
         url = bot.printer_config(printer_id).printer_ui_url
         if url:
@@ -288,6 +431,46 @@ class CancelConfirmationView(discord.ui.View):
         del button
         await interaction.response.edit_message(
             content="Cancellation dismissed.", view=None)
+
+
+class StartPrintConfirmationView(discord.ui.View):
+    def __init__(self, bot: "DisRakerBot", printer_id: str, filename: str):
+        super().__init__(timeout=45.0)
+        self.bot = bot
+        self.printer_id = printer_id
+        self.filename = filename
+
+    @discord.ui.button(label="Start print",
+                       style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction,
+                      button: discord.ui.Button):
+        del button
+        if not await self.bot.require_control_access(
+                interaction, self.printer_id):
+            return
+        try:
+            status = await self.bot.client(self.printer_id).status()
+            state = str(status.get("print_stats", {}).get("state", ""))
+            if state in ("printing", "paused"):
+                await interaction.response.edit_message(
+                    content="A print is already {}.".format(state),
+                    view=None)
+                return
+            await self.bot.client(self.printer_id).start_print(self.filename)
+            await interaction.response.edit_message(
+                content="Print start requested for `{}`.".format(
+                    self.filename), view=None)
+        except MoonrakerError as exc:
+            await interaction.response.edit_message(
+                content=str(exc), view=None)
+
+    @discord.ui.button(label="Do not start",
+                       style=discord.ButtonStyle.secondary)
+    async def dismiss(self, interaction: discord.Interaction,
+                      button: discord.ui.Button):
+        del button
+        await interaction.response.edit_message(
+            content="Print start dismissed.", view=None)
 
 
 class DisRakerBot(commands.Bot):
@@ -330,6 +513,26 @@ class DisRakerBot(commands.Bot):
 
     def default_printer_id(self) -> str:
         return next(iter(self.config.printers))
+
+    async def current_job_data(self, printer_id: str):
+        client = self.client(printer_id)
+        status = await client.status()
+        filename = str(
+            status.get("print_stats", {}).get("filename") or "")
+        metadata = {}
+        if filename:
+            try:
+                metadata = await client.gcode_metadata(filename)
+            except MoonrakerError:
+                LOG.info("G-code metadata unavailable for %s", printer_id,
+                         exc_info=True)
+        try:
+            queue = await client.job_queue()
+        except MoonrakerError:
+            LOG.info("Job queue unavailable for %s", printer_id,
+                     exc_info=True)
+            queue = {"queue_state": "unavailable", "queued_jobs": []}
+        return status, metadata, queue
 
     async def setup_hook(self):
         for printer_id in self.config.printers:
@@ -440,6 +643,18 @@ class DisRakerBot(commands.Bot):
                 info = await client.printer_info()
                 embed = details_embed(
                     status, info, await self.printer_name(printer_id))
+                await interaction.edit_original_response(embed=embed)
+            except MoonrakerError as exc:
+                await interaction.edit_original_response(content=str(exc))
+            return
+        if action == "jobs":
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                status, metadata, queue = await self.current_job_data(
+                    printer_id)
+                embed = current_job_embed(
+                    status, metadata, queue,
+                    await self.printer_name(printer_id))
                 await interaction.edit_original_response(embed=embed)
             except MoonrakerError as exc:
                 await interaction.edit_original_response(content=str(exc))
@@ -762,13 +977,121 @@ def register_commands(bot: DisRakerBot):
 
     dashboard.autocomplete("printer_id")(autocomplete_printer)
 
+    @bot.tree.command(name="job",
+                      description="Show the active print and queue summary")
+    @app_commands.describe(printer_id="Configured printer ID")
+    async def job(interaction: discord.Interaction,
+                  printer_id: Optional[str] = None):
+        selected = await resolve(interaction, printer_id)
+        if selected is None:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            status, metadata, queue_data = await bot.current_job_data(
+                selected)
+            embed = current_job_embed(
+                status, metadata, queue_data,
+                await bot.printer_name(selected))
+            await interaction.edit_original_response(embed=embed)
+        except MoonrakerError as exc:
+            await interaction.edit_original_response(content=str(exc))
+
+    job.autocomplete("printer_id")(autocomplete_printer)
+
+    @bot.tree.command(name="history",
+                      description="Show recent completed and stopped prints")
+    @app_commands.describe(printer_id="Configured printer ID")
+    async def history(interaction: discord.Interaction,
+                      printer_id: Optional[str] = None):
+        selected = await resolve(interaction, printer_id)
+        if selected is None:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            data = await bot.client(selected).recent_history()
+            embed = history_embed(data, await bot.printer_name(selected))
+            await interaction.edit_original_response(embed=embed)
+        except MoonrakerError as exc:
+            await interaction.edit_original_response(content=str(exc))
+
+    history.autocomplete("printer_id")(autocomplete_printer)
+
+    @bot.tree.command(name="queue",
+                      description="Show prints waiting in Moonraker's queue")
+    @app_commands.describe(printer_id="Configured printer ID")
+    async def queue(interaction: discord.Interaction,
+                    printer_id: Optional[str] = None):
+        selected = await resolve(interaction, printer_id)
+        if selected is None:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            data = await bot.client(selected).job_queue()
+            embed = queue_embed(data, await bot.printer_name(selected))
+            await interaction.edit_original_response(embed=embed)
+        except MoonrakerError as exc:
+            await interaction.edit_original_response(content=str(exc))
+
+    queue.autocomplete("printer_id")(autocomplete_printer)
+
+    @bot.tree.command(name="files",
+                      description="Show recently added printable files")
+    @app_commands.describe(printer_id="Configured printer ID")
+    async def files(interaction: discord.Interaction,
+                    printer_id: Optional[str] = None):
+        selected = await resolve(interaction, printer_id)
+        if selected is None:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            data = await bot.client(selected).gcode_files()
+            embed = files_embed(data, await bot.printer_name(selected))
+            await interaction.edit_original_response(embed=embed)
+        except MoonrakerError as exc:
+            await interaction.edit_original_response(content=str(exc))
+
+    files.autocomplete("printer_id")(autocomplete_printer)
+
+    @bot.tree.command(name="start_print",
+                      description="Start a G-code file after confirmation")
+    @app_commands.describe(
+        filename="Exact path shown by /files",
+        printer_id="Configured printer ID",
+    )
+    async def start_print(interaction: discord.Interaction, filename: str,
+                          printer_id: Optional[str] = None):
+        selected = await resolve(interaction, printer_id)
+        if selected is None:
+            return
+        if not await bot.require_control_access(interaction, selected):
+            return
+        filename = filename.strip()
+        if not filename:
+            await interaction.response.send_message(
+                "A G-code filename is required.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            metadata = await bot.client(selected).gcode_metadata(filename)
+            expected = str(metadata.get("filename") or filename)
+            view = StartPrintConfirmationView(bot, selected, expected)
+            await interaction.edit_original_response(
+                content="Start `{}` on **{}**?".format(
+                    expected, await bot.printer_name(selected)),
+                view=view,
+            )
+        except MoonrakerError as exc:
+            await interaction.edit_original_response(content=str(exc))
+
+    start_print.autocomplete("printer_id")(autocomplete_printer)
+
     @bot.tree.command(name="printers",
                       description="List configured Moonraker printers")
     async def printers(interaction: discord.Interaction):
         lines = []
         for printer_id, printer_config in bot.config.printers.items():
             name = printer_config.moonraker.printer_name or printer_id
-            lines.append("• **{}** — `{}`".format(name, printer_id))
+            lines.append("• **{}** - `{}`".format(name, printer_id))
         embed = discord.Embed(
             title="Configured printers",
             description="\n".join(lines),

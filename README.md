@@ -42,8 +42,9 @@ beneath
 duplicate start notification. `notifications.state_file` can override that
 location.
 
-The status controls support pause, resume, and confirmed cancellation through
-Moonraker. Set `discord.job_controls_enabled` to `false` to disable them. Add
+The status controls support pause, resume, confirmed cancellation, and a
+detailed current-job view through Moonraker. Set
+`discord.job_controls_enabled` to `false` to disable write controls. Add
 Discord account IDs to the global `discord.control_user_ids` and/or role IDs
 to `discord.control_role_ids` to create central administrators. Each printer
 may also define its own `control_user_ids` and `control_role_ids`. If every
@@ -125,3 +126,17 @@ a shared status card. The configured `status_channel_id` receives a rolling
 live card plus a new card at each state transition. Refresh, Camera, and
 Details always fetch fresh information through Moonraker; an optional link
 button opens `printer_ui_url`.
+
+Print-management commands are available for each configured printer:
+
+- `/job` shows the active file, state, elapsed time, slicer metadata,
+  remaining slicer estimate, and queue summary.
+- `/history` shows recent completed, cancelled, and failed jobs.
+- `/queue` lists jobs waiting in Moonraker's print queue.
+- `/files` lists the most recently added G-code paths.
+- `/start_print` validates an exact G-code path and asks for confirmation
+  before starting it. It uses the same global and per-printer access rules as
+  pause, resume, and cancel.
+
+DisRaker intentionally does not expose arbitrary G-code, machine power, or
+host administration commands.

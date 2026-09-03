@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 from urllib.parse import urljoin
 
 import aiohttp
@@ -10,6 +10,13 @@ from .config import MoonrakerConfig
 
 class MoonrakerError(RuntimeError):
     pass
+
+
+def _sort_number(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,49 @@ class MoonrakerClient:
 
     async def cancel_print(self):
         await self._json("POST", "/printer/print/cancel")
+
+    async def start_print(self, filename: str):
+        await self._json(
+            "POST", "/printer/print/start", params={"filename": filename})
+
+    async def gcode_metadata(self, filename: str) -> Dict[str, Any]:
+        result = await self._json(
+            "GET", "/server/files/metadata", params={"filename": filename})
+        if not isinstance(result, dict):
+            raise MoonrakerError("Moonraker G-code metadata is malformed")
+        return result
+
+    async def gcode_files(self, limit: int = 15) -> List[Dict[str, Any]]:
+        result = await self._json(
+            "GET", "/server/files/list", params={"root": "gcodes"})
+        if not isinstance(result, list):
+            raise MoonrakerError("Moonraker G-code file list is malformed")
+        files = [item for item in result if isinstance(item, dict)]
+        files.sort(key=lambda item: _sort_number(item.get("modified")),
+                   reverse=True)
+        return files[:max(1, min(limit, 25))]
+
+    async def job_queue(self) -> Dict[str, Any]:
+        result = await self._json("GET", "/server/job_queue/status")
+        if not isinstance(result, dict):
+            raise MoonrakerError("Moonraker job queue is malformed")
+        jobs = result.get("queued_jobs", [])
+        if not isinstance(jobs, list):
+            raise MoonrakerError("Moonraker job queue is malformed")
+        return result
+
+    async def recent_history(self, limit: int = 10) -> Dict[str, Any]:
+        result = await self._json(
+            "GET", "/server/history/list", params={
+                "limit": max(1, min(limit, 25)),
+                "order": "desc",
+            })
+        if not isinstance(result, dict):
+            raise MoonrakerError("Moonraker job history is malformed")
+        jobs = result.get("jobs", [])
+        if not isinstance(jobs, list):
+            raise MoonrakerError("Moonraker job history is malformed")
+        return result
 
     async def status_updates(self) -> AsyncIterator[Dict[str, Any]]:
         url = urljoin(self.config.url + "/", "websocket")
