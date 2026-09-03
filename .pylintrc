@@ -1,0 +1,26 @@
+[MAIN]
+ignore-paths=usr/prog/DisRaker/.venv
+
+[MESSAGES CONTROL]
+# DisRaker is a compact application. These library-oriented metrics create
+# noise without finding defects, especially in Discord callbacks and tests.
+disable=
+    cyclic-import,
+    import-error,
+    import-outside-toplevel,
+    missing-class-docstring,
+    missing-function-docstring,
+    missing-module-docstring,
+    protected-access,
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-branches,
+    too-many-instance-attributes,
+    too-many-locals,
+    too-many-public-methods,
+    too-many-return-statements,
+    too-many-statements,
+    consider-using-f-string
+
+[FORMAT]
+max-line-length=80
