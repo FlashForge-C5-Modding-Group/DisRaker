@@ -92,10 +92,32 @@ also trigger a ping. Use `/printers` to list configured IDs;
 The former top-level `moonraker` section remains supported as a single-printer
 compatibility mode.
 
-The Discord application needs the `bot` and `applications.commands` scopes.
-Recommended channel permissions are View Channel, Send Messages, Embed Links,
-Attach Files, and Use Application Commands. Message Content intent is not
-required.
+For a server installation, the Discord application needs the `bot` and
+`applications.commands` scopes. Recommended channel permissions are View
+Channel, Send Messages, Embed Links, Attach Files, and Use Application
+Commands. Message Content intent is not required.
+
+## Discord DMs and user installation
+
+DisRaker registers its global commands for both Guild Install and User
+Install. Commands may run in a server, a DM with the bot, or another private
+channel supported by Discord.
+
+In the Discord Developer Portal, open the application's Installation page,
+enable User Install, and add `applications.commands` to the User Install
+default scopes. Use the resulting Discord-provided installation link to add
+the application to your user account. Keep the existing Guild Install with
+the `bot` and `applications.commands` scopes if status notifications should
+still be posted to a server channel.
+
+DMs do not provide server roles. Add the person's Discord account ID to
+`discord.control_user_ids` for access to every printer, or to a printer's
+`control_user_ids` for access to only that printer. Role-only authorization
+will continue to work in servers but cannot authorize a DM command.
+
+Commands are synchronized globally even when `allowed_guild_id` is set, so
+user-installed and DM commands remain available. The configured guild also
+receives a guild-specific copy for faster command updates.
 
 ## Installation on the printer
 

@@ -507,6 +507,10 @@ class DisRakerBot(commands.Bot):
                  moonrakers: Dict[str, MoonrakerClient]):
         super().__init__(command_prefix=commands.when_mentioned,
                          intents=discord.Intents.none())
+        self.tree.allowed_contexts = app_commands.AppCommandContext(
+            guild=True, dm_channel=True, private_channel=True)
+        self.tree.allowed_installs = app_commands.AppInstallationType(
+            guild=True, user=True)
         self.config = config
         self.moonrakers = moonrakers
         self._commands_synced = False
@@ -582,13 +586,12 @@ class DisRakerBot(commands.Bot):
 
     async def on_ready(self):
         if not self._commands_synced:
+            await self.tree.sync()
             if self.config.discord.allowed_guild_id:
                 guild = discord.Object(
                     id=self.config.discord.allowed_guild_id)
                 self.tree.copy_global_to(guild=guild)
                 await self.tree.sync(guild=guild)
-            else:
-                await self.tree.sync()
             self._commands_synced = True
         if not self._startup_cleanup_done:
             for printer_id in self.config.printers:
