@@ -13,6 +13,24 @@ from disraker.bot import (
 
 
 class StatusEmbedTests(unittest.TestCase):
+    def test_moonraker_estimate_is_shown_next_to_print_time(self):
+        status = {
+            "print_stats": {
+                "state": "printing",
+                "filename": "test.gcode",
+                "print_duration": 120,
+                "total_duration": 135,
+            },
+            "virtual_sdcard": {"progress": 0.25},
+        }
+        embed = status_embed(status, "Test Printer", estimated_time=600)
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertEqual(
+            fields["Print time"],
+            "00:02:00 / 00:10:00 estimated",
+        )
+        self.assertEqual(fields["Estimated remaining"], "00:08:00")
+
     def test_all_fans_are_displayed(self):
         status = {
             "print_stats": {"state": "printing", "filename": "test.gcode"},

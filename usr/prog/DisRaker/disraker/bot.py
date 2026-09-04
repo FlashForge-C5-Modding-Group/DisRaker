@@ -65,7 +65,8 @@ def _discord_time(timestamp: Any) -> str:
     return "<t:{}:R>".format(value) if value > 0 else "Unknown time"
 
 
-def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
+def status_embed(status: Dict[str, Any], printer_name: str,
+                 estimated_time: float = 0.0) -> discord.Embed:
     printer_name = printer_name[:180]
     stats = status.get("print_stats", {})
     state = str(stats.get("state", "unknown"))
@@ -89,12 +90,19 @@ def status_embed(status: Dict[str, Any], printer_name: str) -> discord.Embed:
     embed.add_field(name="State", value=state.title(), inline=True)
     embed.add_field(name="Progress", value="{:.1f}%".format(progress),
                     inline=True)
-    embed.add_field(name="Print time", value=_duration(
-        _number(stats.get("print_duration"))), inline=True)
-    total_duration = _number(stats.get("total_duration"))
-    if 0.0 < progress < 100.0:
+    print_duration = _number(stats.get("print_duration"))
+    estimate = _number(estimated_time)
+    estimate_elapsed = print_duration
+    if not estimate and 0.0 < progress < 100.0:
+        total_duration = _number(stats.get("total_duration"))
         estimate = total_duration / (progress / 100.0)
-        remaining = max(0.0, estimate - total_duration)
+        estimate_elapsed = total_duration
+    time_value = _duration(print_duration)
+    if estimate:
+        time_value += " / {} estimated".format(_duration(estimate))
+    embed.add_field(name="Print time", value=time_value, inline=True)
+    if estimate and 0.0 < progress < 100.0:
+        remaining = max(0.0, estimate - estimate_elapsed)
         embed.add_field(name="Estimated remaining",
                         value=_duration(remaining), inline=True)
     filament = _number(stats.get("filament_used"))
@@ -400,6 +408,7 @@ class DisRakerBot(commands.Bot):
         self._commands_synced = False
         self._startup_cleanup_done = False
         self._names: Dict[str, str] = {}
+        self._print_estimates: Dict[tuple, float] = {}
         self._messages: Dict[str, discord.Message] = {}
         self._observations: Dict[str, Optional[PrintObservation]] = {}
         self._online: Dict[str, Optional[bool]] = {}
@@ -599,7 +608,9 @@ class DisRakerBot(commands.Bot):
             await interaction.edit_original_response(content=str(exc))
 
     async def status_content(self, printer_id: str, status: Dict[str, Any]):
-        embed = status_embed(status, await self.printer_name(printer_id))
+        estimate = await self.estimated_print_time(printer_id, status)
+        embed = status_embed(
+            status, await self.printer_name(printer_id), estimate)
         image = None
         if self.config.notifications.show_camera_in_status:
             try:
@@ -610,6 +621,25 @@ class DisRakerBot(commands.Bot):
                 LOG.warning("Camera unavailable for %s", printer_id,
                             exc_info=True)
         return embed, image
+
+    async def estimated_print_time(
+            self, printer_id: str, status: Dict[str, Any]) -> float:
+        filename = str(
+            status.get("print_stats", {}).get("filename") or "")
+        if not filename:
+            return 0.0
+        cache_key = (printer_id, filename)
+        if cache_key in self._print_estimates:
+            return self._print_estimates[cache_key]
+        try:
+            metadata = await self.client(printer_id).gcode_metadata(filename)
+        except MoonrakerError:
+            LOG.info("Print estimate unavailable for %s", printer_id,
+                     exc_info=True)
+            return 0.0
+        estimate = _number(metadata.get("estimated_time"))
+        self._print_estimates[cache_key] = estimate
+        return estimate
 
     async def status_edit_payload(self, printer_id: str,
                                   status: Dict[str, Any]):
@@ -745,7 +775,9 @@ class DisRakerBot(commands.Bot):
         mentions = self.mention_text(printer_id, state, previous)
         if mentions:
             content = "{}\n{}".format(mentions, content)
-        embed = status_embed(status, printer_name)
+        embed = status_embed(
+            status, printer_name,
+            await self.estimated_print_time(printer_id, status))
         kwargs = {
             "content": content,
             "embed": embed,
