@@ -1,8 +1,8 @@
 #!/bin/sh
 
-APP_DIR=/usr/prog/DisRaker
-CONFIG=/usr/prog/scripts/config/disraker.json
-LOG_DIR=/usr/data/logs
+APP_DIR=/usr/data/disraker
+CONFIG=/usr/data/disraker/config/disraker.json
+LOG_DIR=/usr/data/disraker/logs
 LOG_FILE=$LOG_DIR/disraker.log
 RESTART_DELAY=${DISRAKER_RESTART_DELAY:-5}
 
@@ -23,4 +23,3 @@ while true; do
     echo "$(date '+%Y-%m-%d %H:%M:%S') DisRaker exited ($status); restarting in ${RESTART_DELAY}s" >> "$LOG_FILE"
     sleep "$RESTART_DELAY"
 done
-

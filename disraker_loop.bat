@@ -2,8 +2,8 @@
 setlocal EnableExtensions
 
 set "SCRIPT_DIR=%~dp0"
-for %%I in ("%SCRIPT_DIR%..\..\DisRaker") do set "APP_DIR=%%~fI"
-for %%I in ("%SCRIPT_DIR%..\config\disraker.json") do set "DEFAULT_CONFIG=%%~fI"
+for %%I in ("%SCRIPT_DIR%\usr\data\DisRaker") do set "APP_DIR=%%~fI"
+for %%I in ("%SCRIPT_DIR%\usr\data\disraker\config\disraker.json") do set "DEFAULT_CONFIG=%%~fI"
 set "LOG_DIR=%APP_DIR%\logs"
 set "LOG_FILE=%LOG_DIR%\disraker.log"
 

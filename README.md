@@ -2,23 +2,23 @@
 
 DisRaker is a Python Discord bot for Klipper printers managed by Moonraker.
 It posts live Discord status cards with buttons for current print state,
-temperatures, progress, motion data, every configured fan, and a
+temperatures, motion data, every configured fan, and a
 Moonraker-configured camera. It also
 notifies a configured status channel when a print starts, pauses, completes,
-fails, or is cancelled.
+fails, or is cancelled. Think of it as a cloud app, for Discord.
 
 The repository mirrors the requested printer installation layout:
 
 ```text
-usr/prog/DisRaker/                 Python application
-usr/prog/scripts/config/           Runtime configuration
+usr/data/disraker/                 Python application
+usr/data/disraker/config/          Runtime configuration
 usr/prog/scripts/scripts/          Restart loop script
 ```
 
 ## Configuration
 
-Copy `usr/prog/scripts/config/disraker.json.example` to
-`/usr/prog/scripts/config/disraker.json`, then set the Discord bot token,
+Copy `usr/data/disraker/config/disraker.json.example` to
+`/usr/data/disraker/config/disraker.json`, then set the Discord bot token,
 status channel ID, and Moonraker URL. The token may instead be supplied
 as `DISRAKER_DISCORD_TOKEN`.
 
@@ -44,7 +44,7 @@ override it explicitly.
 Set each printer's `name` to choose its displayed name. If it is empty,
 DisRaker uses the hostname returned by that Moonraker. Print state is saved
 beneath
-`usr/prog/DisRaker/data`, preventing a restart during a print from sending a
+`usr/data/DisRaker/data`, preventing a restart during a print from sending a
 duplicate start notification. `notifications.state_file` can override that
 location.
 
@@ -142,37 +142,35 @@ Commands are synchronized globally even when `allowed_guild_id` is set, so
 user-installed and DM commands remain available. The configured guild also
 receives a guild-specific copy for faster command updates.
 
-## Installation on the printer
+## Installation on FlashForge printers (Using OpenCreator)
 
 ```sh
-cd /usr/prog/DisRaker
+cd /usr/data/DisRaker
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp /path/to/disraker.json /usr/prog/scripts/config/disraker.json
-chmod +x /usr/prog/scripts/scripts/disraker_loop.sh
-/usr/prog/scripts/scripts/disraker_loop.sh
+cp /usr/data/disraker/config/disraker.json.example /usr/data/disraker/config/disraker.json
+chmod +x /usr/data/scripts/scripts/disraker_loop.sh
 ```
+You need to fill out `/usr/data/disraker/config/disraker.json`
+Now you can run it by either running it directly and keeping the window open, or if loop-script is running, you can restart your printer.
 
 For Windows testing, run the batch launcher from the repository:
 
 ```bat
-usr\prog\scripts\scripts\disraker_loop.bat --check
-usr\prog\scripts\scripts\disraker_loop.bat --once
-usr\prog\scripts\scripts\disraker_loop.bat
+disraker_loop.bat --check
+disraker_loop.bat --once
+disraker_loop.bat
 ```
+You'll have to make sure that where its starting to is correct on Windows.
 
-On first use it creates `usr\prog\DisRaker\.venv` and installs the Python
-requirements. If the JSON configuration does not exist, it copies the example
-to `usr\prog\scripts\config\disraker.json` and asks you to fill in the Discord
-token and status channel. `--once` keeps errors visible without entering the
+On first use it creates `usr\data\DisRaker\.venv` and installs the Python
+requirements. `--once` keeps errors visible without entering the
 restart loop; the default mode restarts after failures and records lifecycle
-events in `usr\prog\DisRaker\logs\disraker.log`.
+events in `usr\data\disraker\logs\disraker.log`.
 
 Run `/printer` in Discord for a private status card, or `/dashboard` to publish
-a shared status card. The configured `status_channel_id` receives a rolling
-live card plus a new card at each state transition. Refresh, Camera, and
-Details always fetch fresh information through Moonraker; an optional link
-button opens `printer_ui_url`.
+a shared status card. The configured `status_channel_id` or DM receives a rolling
+live card.
 
 Print-management commands are available for each configured printer:
 
@@ -186,12 +184,9 @@ Print-management commands are available for each configured printer:
   pause, resume, and cancel.
 
 The Current Job button and all five print-management commands require an
-allowed user, an allowed role, or Manage Server permission. Public status,
-camera, refresh, and general printer details remain read-only.
+allowed user, an allowed role, or Manage Server permission. Public status such as;
+camera, refresh are non modifiable so are accessable by the public.
 
 Pause and Cancel are only shown while a print is active. A paused job shows
 Resume and Cancel. Idle, completed, cancelled, and failed cards omit those
-controls entirely.
-
-DisRaker intentionally does not expose arbitrary G-code, machine power, or
-host administration commands.
+controls entirely as what are you going to do, stop a stopped job?
