@@ -7,14 +7,6 @@ Moonraker-configured camera. It also
 notifies a configured status channel when a print starts, pauses, completes,
 fails, or is cancelled. Think of it as a cloud app, for Discord.
 
-The repository mirrors the requested printer installation layout:
-
-```text
-usr/data/disraker/                 Python application
-usr/data/disraker/config/          Runtime configuration
-usr/prog/scripts/scripts/          Restart loop script
-```
-
 ## Configuration
 
 Copy `usr/data/disraker/config/disraker.json.example` to
@@ -27,14 +19,10 @@ the current live card. A pause, resume, completion, cancellation, error, or
 other state transition creates a new card. Set `notifications.poll_seconds`
 to change the interval. Print-state transitions additionally use Moonraker's
 WebSocket subscription, so start/pause/finish messages do not wait for a poll.
-If a poll cannot reach Moonraker or Klipper, DisRaker posts one offline card
-without active print controls. Repeated failures do not create more cards.
+If a poll cannot reach Moonraker or Klipper, DisRaker posts an offline card.
 When the printer responds again, it posts a back-online card containing the
-current print state. Connectivity is saved in the state file, preventing a
-bot restart from repeating an existing offline alert. Connectivity monitoring
-runs when `notifications.enabled` is true.
-Cancellation and error card IDs are remembered. Those old terminal cards are
-deleted when DisRaker restarts or when that printer begins a new print.
+current print state. 
+Connectivity monitoring runs when `notifications.enabled` is true.
 `show_camera_in_status` controls the dashboard image,
 `include_camera_in_events` controls event-message images, and `send_idle`
 enables or disables idle transition messages. Camera selection uses
@@ -59,34 +47,41 @@ denied when a user is not present in an applicable allowlist. Empty lists do
 not grant public control. Members with Manage Server permission are always
 central administrators.
 
+## Installation on FlashForge printers (Using OpenCreator)
+
+You'll have to move the directories manually, but they should line up almost perfectly to the "Loop Script" method.
+```sh
+cd /usr/data/disraker
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp /usr/data/disraker/config/disraker.json.example /usr/data/disraker/config/disraker.json 
+chmod +x /usr/data/scripts/scripts/disraker_loop.sh
+```
+When you install requirements on the printer, it may take a long while as it needs to build a library. Wait, you can check status by opening up another ssh window and looking at `top` to see if it is doing anything.
+You need to fill out `/usr/data/disraker/config/disraker.json`, usually using SFTP or SCP, alternatively `vi`.
+Now you can run it by either running it directly and keeping the window open, `./usr/data/scripts/scripts/disraker_loop.sh` or if loop script is running, you can restart your printer. It is recommended to run it once manually to check if you have any configs wrong.
+If you use loop script and want to check if it started, do `cat /usr/data/disraker/logs/disraker.log`
+
+### Windows installations as a server
+For Windows testing, run the batch launcher from the repository:
+```bat
+disraker_loop.bat --check
+disraker_loop.bat --once
+disraker_loop.bat
+```
+You'll need a Python install in PATH. Make sure you have it in path by running `python`.
+You'll also need pip. 
+
+### Other Linux computers / Printers
+For use outside of the intended printer on Linux such as a Qidi, you may have to modify the .sh file and file paths to fit your needs.
+
 ## Multiple Moonraker printers
 
 One DisRaker process can connect directly to multiple Moonraker instances.
 Each printer has an independent URL, camera, name, status channel, controls,
-remembered print state, and notification mentions.
+remembered print state, and notification mentions. Define printers by a short unique ID
 
-Define printers by a short unique ID:
-
-```json
-"printers": {
-  "creator5": {
-    "name": "Creator 5 Pro",
-    "status_channel_id": 123456789012345678,
-    "control_user_ids": [111111111111111111],
-    "control_role_ids": [],
-    "mention_user_ids": [111111111111111111],
-    "mention_role_ids": [222222222222222222],
-    "mention_states": [
-      "printing", "paused", "complete", "cancelled", "error"
-    ],
-    "moonraker": {
-      "url": "http://creator5.local:7125",
-      "api_key": "",
-      "camera_name": ""
-    }
-  }
-}
-```
+You can figure it out by checking out the example config. It may be removed to make it a single printer service.
 
 A printer `status_channel_id` of `0` uses the global Discord status channel.
 Users and roles listed under `mention_user_ids` and `mention_role_ids` are
@@ -142,27 +137,6 @@ Commands are synchronized globally even when `allowed_guild_id` is set, so
 user-installed and DM commands remain available. The configured guild also
 receives a guild-specific copy for faster command updates.
 
-## Installation on FlashForge printers (Using OpenCreator)
-
-```sh
-cd /usr/data/DisRaker
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp /usr/data/disraker/config/disraker.json.example /usr/data/disraker/config/disraker.json
-chmod +x /usr/data/scripts/scripts/disraker_loop.sh
-```
-You need to fill out `/usr/data/disraker/config/disraker.json`
-Now you can run it by either running it directly and keeping the window open, or if loop-script is running, you can restart your printer.
-
-For Windows testing, run the batch launcher from the repository:
-
-```bat
-disraker_loop.bat --check
-disraker_loop.bat --once
-disraker_loop.bat
-```
-You'll have to make sure that where its starting to is correct on Windows.
-
 On first use it creates `usr\data\DisRaker\.venv` and installs the Python
 requirements. `--once` keeps errors visible without entering the
 restart loop; the default mode restarts after failures and records lifecycle
@@ -186,7 +160,3 @@ Print-management commands are available for each configured printer:
 The Current Job button and all five print-management commands require an
 allowed user, an allowed role, or Manage Server permission. Public status such as;
 camera, refresh are non modifiable so are accessable by the public.
-
-Pause and Cancel are only shown while a print is active. A paused job shows
-Resume and Cancel. Idle, completed, cancelled, and failed cards omit those
-controls entirely as what are you going to do, stop a stopped job?

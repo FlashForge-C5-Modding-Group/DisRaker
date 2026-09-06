@@ -25,7 +25,7 @@
     "creator5": {
       "name": "Creator 5 Pro",
       "status_channel_id": 0,
-      "printer_ui_url": "http://creator5.local/",
+      "printer_ui_url": "127.0.0.1",
       "control_user_ids": [],
       "control_role_ids": [],
       "mention_user_ids": [],
@@ -34,7 +34,7 @@
         "printing", "paused", "complete", "cancelled", "error"
       ],
       "moonraker": {
-        "url": "http://creator5.local:7125",
+        "url": "127.0.0.1:7125",
         "api_key": "",
         "timeout_seconds": 10,
         "verify_ssl": true,
@@ -51,7 +51,7 @@
     "second-printer": {
       "name": "Second Printer",
       "status_channel_id": 0,
-      "printer_ui_url": "http://second-printer.local/",
+      "printer_ui_url": "192.168.0.256",
       "control_user_ids": [],
       "control_role_ids": [],
       "mention_user_ids": [],
@@ -60,7 +60,7 @@
         "printing", "paused", "complete", "cancelled", "error"
       ],
       "moonraker": {
-        "url": "http://second-printer.local:7125",
+        "url": "192.168.0.256:7125",
         "api_key": "",
         "timeout_seconds": 10,
         "verify_ssl": true,
